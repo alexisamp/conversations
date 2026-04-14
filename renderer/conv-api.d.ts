@@ -73,6 +73,11 @@ export type AddValueLogInput = {
 
 export type WriteResult = { ok: true } | { ok: false; error: string }
 
+export type ChatChangedEvent = {
+  phone: string | null
+  name: string | null
+}
+
 export type ConvApi = {
   auth: {
     status(): Promise<AuthStatus>
@@ -84,6 +89,9 @@ export type ConvApi = {
     byPhone(phone: string): Promise<ContactDetail | null>
     logInteraction(input: LogInteractionInput): Promise<WriteResult>
     addValueLog(input: AddValueLogInput): Promise<WriteResult>
+  }
+  chat: {
+    onChanged(cb: (event: ChatChangedEvent) => void): void
   }
   sidebar: {
     toggle(): Promise<void>

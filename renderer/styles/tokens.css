@@ -136,25 +136,31 @@ body {
   border-color: var(--shuttle);
 }
 
-.dev-lookup {
-  padding: 10px 14px;
+.dev-lookup-collapsible {
   border-bottom: 1px solid var(--mercury);
-  background: var(--gossip);
+  background: var(--bg-soft);
   flex-shrink: 0;
+  font-size: 11px;
 }
-.dev-label {
+.dev-lookup-collapsible summary {
+  padding: 6px 14px;
+  cursor: pointer;
+  color: var(--muted);
   font-size: 10px;
-  color: var(--burnham);
-  margin-bottom: 6px;
   text-transform: uppercase;
   letter-spacing: 0.5px;
-  font-weight: 600;
+  user-select: none;
 }
-.dev-lookup form {
+.dev-lookup-collapsible summary:hover {
+  color: var(--shuttle);
+}
+.dev-lookup-collapsible form {
   display: flex;
   gap: 6px;
+  padding: 6px 14px 10px;
+  background: var(--gossip);
 }
-.dev-lookup input {
+.dev-lookup-collapsible input {
   flex: 1;
   padding: 6px 10px;
   border: 1px solid var(--mercury);
@@ -162,11 +168,11 @@ body {
   font-size: 12px;
   background: white;
 }
-.dev-lookup input:focus {
+.dev-lookup-collapsible input:focus {
   outline: none;
   border-color: var(--burnham);
 }
-.dev-lookup button {
+.dev-lookup-collapsible button {
   background: var(--burnham);
   color: white;
   border: none;
@@ -175,7 +181,7 @@ body {
   font-size: 12px;
   cursor: pointer;
 }
-.dev-lookup button:disabled {
+.dev-lookup-collapsible button:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }

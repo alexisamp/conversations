@@ -191,6 +191,15 @@ function registerIpc(): void {
     sidebarView?.webContents.send('auth:changed', status)
   })
   registerContactIpc()
+
+  // Forward active-chat changes detected by the WhatsApp preload to the sidebar.
+  ipcMain.on(
+    'wa:chat:changed',
+    (_event, payload: { phone: string | null; name: string | null }) => {
+      console.log('[main] wa:chat:changed →', payload)
+      sidebarView?.webContents.send('chat:changed', payload)
+    },
+  )
 }
 
 // ---------- Lifecycle ----------

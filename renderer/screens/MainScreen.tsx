@@ -1,45 +1,70 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { ContactDetailScreen } from './ContactDetailScreen'
 import type { ContactDetail } from '../conv-api'
 
 type LookupState =
   | { kind: 'idle' }
-  | { kind: 'loading' }
-  | { kind: 'not-found'; phone: string }
+  | { kind: 'no-active-chat' }
+  | { kind: 'loading'; phone: string }
+  | { kind: 'not-found'; phone: string; waName: string | null }
   | { kind: 'found'; contact: ContactDetail }
   | { kind: 'error'; message: string }
 
 export function MainScreen({ email }: { email: string }) {
-  const [phone, setPhone] = useState('')
-  const [state, setState] = useState<LookupState>({ kind: 'idle' })
-  // Remember the last phone that produced a hit so we can re-fetch after a write.
-  const [lastHitPhone, setLastHitPhone] = useState<string | null>(null)
+  const [phoneInput, setPhoneInput] = useState('')
+  const [state, setState] = useState<LookupState>({ kind: 'no-active-chat' })
+  // Track the last successful phone so writes can re-fetch.
+  const lastHitPhoneRef = useRef<string | null>(null)
+  // Track the auto-detected chat so we know when to re-fetch on writes.
+  const autoChatRef = useRef<{ phone: string | null; name: string | null }>({
+    phone: null,
+    name: null,
+  })
 
-  const runLookup = useCallback(async (rawPhone: string) => {
-    setState({ kind: 'loading' })
-    try {
-      const contact = await window.conv.contact.byPhone(rawPhone)
-      if (contact) {
-        setState({ kind: 'found', contact })
-        setLastHitPhone(rawPhone)
-      } else {
-        setState({ kind: 'not-found', phone: rawPhone })
+  const runLookup = useCallback(
+    async (rawPhone: string, waName: string | null = null) => {
+      setState({ kind: 'loading', phone: rawPhone })
+      try {
+        const contact = await window.conv.contact.byPhone(rawPhone)
+        if (contact) {
+          setState({ kind: 'found', contact })
+          lastHitPhoneRef.current = rawPhone
+        } else {
+          setState({ kind: 'not-found', phone: rawPhone, waName })
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Lookup failed'
+        setState({ kind: 'error', message })
       }
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Lookup failed'
-      setState({ kind: 'error', message })
-    }
-  }, [])
+    },
+    [],
+  )
 
-  async function handleSubmit(event: React.FormEvent) {
+  // Subscribe to active-chat changes from the WhatsApp preload.
+  useEffect(() => {
+    window.conv.chat.onChanged((event) => {
+      autoChatRef.current = event
+      if (event.phone) {
+        runLookup(event.phone, event.name)
+      } else {
+        // Switched out of any chat (e.g. landed on the chat list / settings)
+        setState({ kind: 'no-active-chat' })
+        lastHitPhoneRef.current = null
+      }
+    })
+  }, [runLookup])
+
+  async function handleManualSubmit(event: React.FormEvent) {
     event.preventDefault()
-    const trimmed = phone.trim()
+    const trimmed = phoneInput.trim()
     if (!trimmed) return
     await runLookup(trimmed)
   }
 
   async function handleRefresh() {
-    if (lastHitPhone) await runLookup(lastHitPhone)
+    if (lastHitPhoneRef.current) {
+      await runLookup(lastHitPhoneRef.current, autoChatRef.current.name)
+    }
   }
 
   async function handleSignOut() {
@@ -57,30 +82,42 @@ export function MainScreen({ email }: { email: string }) {
         </button>
       </header>
 
-      <div className="dev-lookup">
-        <div className="dev-label">Phase 1 dev — look up by phone</div>
-        <form onSubmit={handleSubmit}>
+      <details className="dev-lookup-collapsible">
+        <summary>Manual lookup (dev)</summary>
+        <form onSubmit={handleManualSubmit}>
           <input
             type="text"
             placeholder="+5215551234567"
-            value={phone}
-            onChange={(e) => setPhone(e.target.value)}
+            value={phoneInput}
+            onChange={(e) => setPhoneInput(e.target.value)}
           />
-          <button type="submit" disabled={state.kind === 'loading' || !phone.trim()}>
-            {state.kind === 'loading' ? '…' : 'Look up'}
+          <button
+            type="submit"
+            disabled={state.kind === 'loading' || !phoneInput.trim()}
+          >
+            Look up
           </button>
         </form>
-      </div>
+      </details>
 
       <div className="body">
-        {state.kind === 'idle' && (
-          <div className="empty">Type a phone number to look up a reThink contact.</div>
+        {state.kind === 'no-active-chat' && (
+          <div className="empty">
+            <strong>No active chat</strong>
+            <div className="muted small">
+              Open a WhatsApp conversation to see contact details.
+            </div>
+          </div>
         )}
-        {state.kind === 'loading' && <div className="loading">Looking up…</div>}
+        {state.kind === 'idle' && <div className="empty">Idle.</div>}
+        {state.kind === 'loading' && (
+          <div className="loading">Looking up {state.phone}…</div>
+        )}
         {state.kind === 'not-found' && (
           <div className="empty">
-            <strong>No reThink contact</strong>
-            <div className="muted">{state.phone}</div>
+            <strong>Not in reThink</strong>
+            <div className="muted">{state.waName ?? state.phone}</div>
+            <div className="muted small">{state.phone}</div>
             <div className="muted small">
               Mapping / create person coming in Phase 4.
             </div>

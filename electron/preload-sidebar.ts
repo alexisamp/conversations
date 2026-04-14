@@ -76,6 +76,11 @@ export type AddValueLogInput = {
 
 export type WriteResult = { ok: true } | { ok: false; error: string }
 
+export type ChatChangedEvent = {
+  phone: string | null
+  name: string | null
+}
+
 const api = {
   auth: {
     status: (): Promise<AuthStatus> => ipcRenderer.invoke('auth:status'),
@@ -92,6 +97,13 @@ const api = {
       ipcRenderer.invoke('contact:logInteraction', input),
     addValueLog: (input: AddValueLogInput): Promise<WriteResult> =>
       ipcRenderer.invoke('contact:addValueLog', input),
+  },
+  chat: {
+    onChanged: (cb: (event: ChatChangedEvent) => void): void => {
+      ipcRenderer.on('chat:changed', (_event, payload: ChatChangedEvent) =>
+        cb(payload),
+      )
+    },
   },
   sidebar: {
     toggle: (): Promise<void> => ipcRenderer.invoke('sidebar:toggle'),
