@@ -10,10 +10,9 @@
     "build:renderer": "vite build",
     "build": "npm run build:main && npm run build:renderer",
     "start": "npm run build && electron .",
-    "dev:main": "tsc -p tsconfig.main.json --watch --preserveWatchOutput",
     "dev:vite": "vite",
     "dev:electron": "wait-on tcp:5173 && tsc -p tsconfig.main.json && CONV_DEV=1 CONV_DEVTOOLS=1 electron .",
-    "dev": "concurrently -k -n vite,main,app -c blue,yellow,green \"npm:dev:vite\" \"npm:dev:main\" \"npm:dev:electron\"",
+    "dev": "concurrently -k -n vite,app -c blue,green \"npm:dev:vite\" \"npm:dev:electron\"",
     "typecheck": "tsc -p tsconfig.main.json --noEmit && tsc -p tsconfig.renderer.json --noEmit"
   },
   "dependencies": {
