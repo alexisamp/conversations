@@ -1,6 +1,6 @@
 import type { BaseWindow, WebContentsView } from 'electron'
 
-export const SIDEBAR_WIDTH = 400
+export const SIDEBAR_WIDTH = 360
 
 /**
  * Lays out the WhatsApp view on the left and the sidebar on the right.
