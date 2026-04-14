@@ -1,5 +1,3 @@
-// Conversations — preload script
-// Phase 0: intentionally empty. We just need the file to exist so contextIsolation works.
-// Phase 2 will add the WhatsApp DOM observer here (port of extension/src/content-scripts/whatsapp.ts).
-
+// Legacy stub — kept so the old tsconfig entry still compiles during Phase 1 transition.
+// The real preloads now live in preload-whatsapp.ts and preload-sidebar.ts.
 export {}

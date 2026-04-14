@@ -1,0 +1,257 @@
+:root {
+  --burnham: #003720;
+  --shuttle: #536471;
+  --mercury: #e3e3e3;
+  --pastel: #79d65e;
+  --gossip: #e5f9bd;
+  --bg: #ffffff;
+  --text: #0a0a0a;
+  --muted: #8a8a8a;
+  --danger: #b00020;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
+  font-size: 13px;
+  color: var(--text);
+  background: var(--bg);
+}
+
+body {
+  overflow: hidden;
+}
+
+.loading,
+.empty {
+  padding: 24px 16px;
+  text-align: center;
+  color: var(--muted);
+}
+.empty strong {
+  display: block;
+  color: var(--text);
+  margin-bottom: 4px;
+}
+.empty .muted,
+.muted {
+  color: var(--muted);
+}
+.empty .small,
+.small {
+  font-size: 11px;
+  margin-top: 6px;
+}
+
+.error {
+  color: var(--danger);
+  margin: 12px 16px;
+  font-size: 12px;
+}
+
+/* ---------- Login ---------- */
+.login {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  text-align: center;
+}
+.login h1 {
+  color: var(--burnham);
+  margin: 0 0 8px;
+  font-size: 22px;
+}
+.login p {
+  color: var(--shuttle);
+  margin: 0 0 24px;
+}
+.login button {
+  background: var(--burnham);
+  color: white;
+  border: none;
+  padding: 10px 20px;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.login button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+.login-hint {
+  color: var(--muted);
+  font-size: 11px;
+  margin-top: 20px;
+  max-width: 280px;
+  line-height: 1.4;
+}
+
+/* ---------- Main layout ---------- */
+.main {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+.main-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--mercury);
+  flex-shrink: 0;
+}
+.main-header .email {
+  color: var(--shuttle);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 220px;
+}
+.ghost-button {
+  background: none;
+  border: 1px solid var(--mercury);
+  padding: 4px 10px;
+  border-radius: 6px;
+  color: var(--shuttle);
+  font-size: 12px;
+  cursor: pointer;
+}
+.ghost-button:hover {
+  border-color: var(--shuttle);
+}
+
+.dev-lookup {
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--mercury);
+  background: var(--gossip);
+  flex-shrink: 0;
+}
+.dev-label {
+  font-size: 10px;
+  color: var(--burnham);
+  margin-bottom: 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  font-weight: 600;
+}
+.dev-lookup form {
+  display: flex;
+  gap: 6px;
+}
+.dev-lookup input {
+  flex: 1;
+  padding: 6px 10px;
+  border: 1px solid var(--mercury);
+  border-radius: 6px;
+  font-size: 12px;
+  background: white;
+}
+.dev-lookup input:focus {
+  outline: none;
+  border-color: var(--burnham);
+}
+.dev-lookup button {
+  background: var(--burnham);
+  color: white;
+  border: none;
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.dev-lookup button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.body {
+  flex: 1;
+  overflow-y: auto;
+}
+
+/* ---------- Contact detail ---------- */
+.detail {
+  padding: 16px;
+}
+.detail-name {
+  font-size: 18px;
+  font-weight: 600;
+}
+.detail-company {
+  color: var(--shuttle);
+  font-size: 13px;
+  margin-top: 2px;
+}
+.detail-meta {
+  display: flex;
+  gap: 18px;
+  margin-top: 14px;
+  flex-wrap: wrap;
+}
+.detail-meta > div {
+  display: flex;
+  flex-direction: column;
+}
+.detail-meta .label {
+  font-size: 9px;
+  text-transform: uppercase;
+  color: var(--muted);
+  letter-spacing: 0.5px;
+  font-weight: 600;
+}
+.detail-meta .value {
+  font-size: 14px;
+  font-weight: 500;
+  margin-top: 2px;
+}
+.detail h3 {
+  margin: 20px 0 8px;
+  font-size: 10px;
+  text-transform: uppercase;
+  color: var(--muted);
+  letter-spacing: 0.5px;
+  font-weight: 600;
+}
+
+.interactions {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+.interactions li {
+  padding: 10px 0;
+  border-bottom: 1px solid var(--mercury);
+}
+.interactions li:last-child {
+  border-bottom: none;
+}
+.int-type {
+  font-weight: 500;
+  font-size: 13px;
+  text-transform: capitalize;
+}
+.int-date {
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 2px;
+}
+.int-notes {
+  font-size: 12px;
+  color: var(--shuttle);
+  margin-top: 6px;
+  font-style: italic;
+  line-height: 1.4;
+}
