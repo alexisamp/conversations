@@ -313,10 +313,11 @@ Conversations/
 
 ### Phase 7 — Ship
 - `electron-builder` config for universal macOS DMG
-- Apple code signing + notarization
+- **No code signing, no notarization** — user explicitly opted out of an Apple Developer account (confirmed 2026-04-14). First launch on each Mac requires right-click → Open → Open to bypass Gatekeeper; after that it launches normally forever.
 - Auto-update via `electron-updater` pointing at a GitHub Releases feed (or skip for now, manual DMG swap)
 - Install on wife's Mac, sanity check
-- **Demo:** `npm run dist` → DMG → drag-drop → app in Launchpad → replaces native WhatsApp in Cmd-Tab loop.
+- Custom app icon (decide when we get here — temporary placeholder is fine)
+- **Demo:** `npm run dist` → DMG → drag-drop → app in `/Applications/` → icon in Launchpad → appears in Cmd-Tab → replaces native WhatsApp in daily usage.
 
 ### Phase 8 — Clean up the Chrome extension
 - Remove `content-scripts/whatsapp.ts` from `extension/manifest.json`
@@ -353,11 +354,15 @@ Conversations/
 
 ---
 
-## 11. What I need from you to start Phase 0
+## 11. Phase 0 status — DONE ✅
 
-1. **Approve this SPEC** (or mark up what to change).
-2. **Confirm the repo location**: I'll initialize `~/Documents/Conversations/` as a fresh git repo (`git init`). Acknowledge or propose elsewhere.
-3. **Gemini API key**: is `VITE_GEMINI_API_KEY` set in `~/Documents/reThink-2026/.env.local` (I didn't see it in `.env`), or do I need to get it from you?
-4. **macOS code signing**: do you have an Apple Developer Team ID I should use from day 0, or do we ship unsigned during dev and sign just before Phase 7?
+Closed on 2026-04-14.
 
-Once these four are answered I start Phase 0 — nothing else until then.
+- Repo initialized at `~/Documents/Conversations/` (first commit `522194b`)
+- Electron 33 + TypeScript scaffolded
+- `electron/main.ts` embeds `web.whatsapp.com` in a native macOS window
+- Chrome 129 UA spoof applied at both `session.defaultSession` and `webContents` level
+- Session persisted in `persist:whatsapp` partition (QR scan survives restarts)
+- External links routed to system browser via `setWindowOpenHandler` + `will-navigate`
+- `.env` (gitignored) seeded with Gemini key and Supabase anon key reused from reThink
+- **User-verified:** QR scan worked, messages sent and received, window behavior correct.
