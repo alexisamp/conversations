@@ -20,7 +20,7 @@ export function LoginScreen() {
   return (
     <div className="login">
       <h1>Conversations</h1>
-      <p>Sign in to access your RedThink contacts.</p>
+      <p>Sign in to access your reThink contacts.</p>
       <button onClick={handleSignIn} disabled={loading}>
         {loading ? 'Opening browser…' : 'Sign in with Google'}
       </button>

@@ -58,6 +58,28 @@ async function createMainWindow(): Promise<void> {
   })
   whatsappView.webContents.setUserAgent(CHROME_UA)
 
+  // Give the message pane more horizontal room at the cost of the chat list.
+  // Two levers: (a) zoom the whole page down 18%, (b) force the chat list pane
+  // (#pane-side) to a narrower fixed width via injected CSS.
+  whatsappView.webContents.on('did-finish-load', () => {
+    if (!whatsappView) return
+    whatsappView.webContents.setZoomFactor(0.82)
+    whatsappView.webContents
+      .insertCSS(
+        `
+          #pane-side {
+            min-width: 280px !important;
+            max-width: 280px !important;
+            width: 280px !important;
+            flex-basis: 280px !important;
+          }
+        `,
+      )
+      .catch(() => {
+        /* ignore */
+      })
+  })
+
   whatsappView.webContents.setWindowOpenHandler(({ url }) => {
     shell.openExternal(url).catch(() => {})
     return { action: 'deny' }

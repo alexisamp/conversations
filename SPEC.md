@@ -11,11 +11,11 @@
 
 A **macOS-native desktop app** that embeds WhatsApp Web and acts as the user's primary WhatsApp client (replaces the official WhatsApp macOS app in the dock). While the user chats normally, the app:
 
-1. **Shows a collapsible sidebar** with the current contact's RedThink profile — goals, focus areas, interaction history, health score.
+1. **Shows a collapsible sidebar** with the current contact's reThink profile — goals, focus areas, interaction history, health score.
 2. **Passively observes** every inbound and outbound message. No automation, no auto-replies.
 3. **Groups messages into sessions** using a 6-hour **sliding** window: session stays open as long as a new message arrives within 6h of the previous one.
 4. **On session close**, sends the full conversation text to Gemini 2.0 Flash → gets a 2-line summary → writes it to Supabase as `interactions.notes`.
-5. **Matches WhatsApp contacts** to existing RedThink people by normalized phone number. Unknown numbers trigger a "Create in RedThink" modal with data pre-filled from WhatsApp.
+5. **Matches WhatsApp contacts** to existing reThink people by normalized phone number. Unknown numbers trigger a "Create in reThink" modal with data pre-filled from WhatsApp.
 6. **Feeds weekly goals** via a new KPI: `conversation_uniques_per_day` (distinct contacts with ≥1 closed session that day).
 
 **Explicitly out of scope** (for now): LinkedIn, other channels, auto-replies, any generative feature other than session summaries, multi-user hosting, mobile. LinkedIn stays in the Chrome extension for now.
@@ -35,7 +35,7 @@ A **macOS-native desktop app** that embeds WhatsApp Web and acts as the user's p
 | 7 | Auth: **Google OAuth → Supabase `signInWithIdToken`** | Same flow as the current extension. Reuses existing Supabase project `amvezbymrnvrwcypivkf`. |
 | 8 | AI: **Gemini 2.0 Flash via REST**, env var `VITE_GEMINI_API_KEY` (reuse reThink's key) | Already in use across reThink; no SDK, direct `fetch` to `generativelanguage.googleapis.com/v1beta`. |
 | 9 | Chrome extension coexistence: **disable WhatsApp in the extension**, keep LinkedIn | Two writers to `interactions` = duplicates. WhatsApp becomes Conversations-only. The extension keeps `linkedin-profile.ts`, `linkedin-dm.ts`, floating trigger, sidebar. |
-| 10 | Contact matching: **strict by normalized phone**; name uses RedThink's value once matched | Names in WhatsApp are noisy (emojis, nicknames). Phone is stable. |
+| 10 | Contact matching: **strict by normalized phone**; name uses reThink's value once matched | Names in WhatsApp are noisy (emojis, nicknames). Phone is stable. |
 
 ---
 
@@ -68,7 +68,7 @@ A **macOS-native desktop app** that embeds WhatsApp Web and acts as the user's p
 │    (backfill)                │    │  • RetroactiveImportBtn   │
 └──────────────────────────────┘    └───────────────────────────┘
                ↓                                 ↓
-         SQLite (local)                    Supabase (RedThink)
+         SQLite (local)                    Supabase (reThink)
          messages                          outreach_logs
          sessions                          interactions
          sync_queue                        extension_interaction_windows
@@ -277,7 +277,7 @@ Conversations/
 - `preload-whatsapp.ts` emits `wa:chat:changed` events (port of `startConversationChangeDetector`)
 - Sidebar listens, calls `findContactByPhone`, shows `ContactDetailScreen` or `ContactMappingScreen`
 - **No writes yet.**
-- **Demo:** Open a chat with a known RedThink contact → sidebar shows their card. Open a chat with an unknown number → sidebar shows "Create in RedThink".
+- **Demo:** Open a chat with a known reThink contact → sidebar shows their card. Open a chat with an unknown number → sidebar shows "Create in reThink".
 
 ### Phase 2 — Message capture + local SQLite
 - Port `whatsapp.ts` MutationObserver into `preload-whatsapp.ts`
@@ -294,10 +294,10 @@ Conversations/
 - **Demo:** Chat with a known contact. Immediately see `health_score` go up in reThink. Wait 6h (or force-close via debug menu). See the 2-line summary appear in `interactions.notes` in reThink.
 
 ### Phase 4 — Create person modal
-- `ContactMappingScreen` → "Create in RedThink" button → `outreach_logs.insert` + `contact_phone_mappings.insert`
+- `ContactMappingScreen` → "Create in reThink" button → `outreach_logs.insert` + `contact_phone_mappings.insert`
 - Any buffered sessions for that phone (sitting in `sync_queue` waiting for a contact) flush to Supabase
 - Search-existing flow: find by name, attach phone to existing person
-- **Demo:** New number writes to you. You click "Crear en RedThink", fill a name, submit. The person appears in reThink with a pending interaction already attached.
+- **Demo:** New number writes to you. You click "Crear en reThink", fill a name, submit. The person appears in reThink with a pending interaction already attached.
 
 ### Phase 5 — Retroactive import
 - Port `scanWhatsAppMessageHistory` + `groupInto6HourWindows` from the extension

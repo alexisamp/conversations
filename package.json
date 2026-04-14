@@ -2,7 +2,7 @@
   "name": "conversations",
   "version": "0.0.1",
   "private": true,
-  "description": "Native macOS WhatsApp client with a RedThink CRM sidebar",
+  "description": "Native macOS WhatsApp client with a reThink CRM sidebar",
   "main": "dist/electron/main.js",
   "scripts": {
     "clean": "rm -rf dist",

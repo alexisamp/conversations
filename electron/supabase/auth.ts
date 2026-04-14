@@ -50,6 +50,7 @@ async function signOut(): Promise<void> {
 
 async function signInWithGoogle(): Promise<void> {
   const supabase = getSupabase()
+  console.log('[auth] signInWithGoogle: requesting OAuth URL from Supabase')
 
   const { data, error } = await supabase.auth.signInWithOAuth({
     provider: 'google',
@@ -58,16 +59,42 @@ async function signInWithGoogle(): Promise<void> {
       skipBrowserRedirect: true,
     },
   })
-  if (error) throw error
+  if (error) {
+    console.error('[auth] signInWithOAuth error:', error)
+    throw error
+  }
   if (!data?.url) throw new Error('Supabase did not return an OAuth URL')
+  console.log('[auth] OAuth URL received (first 80 chars):', data.url.slice(0, 80))
 
   // Start the loopback server BEFORE opening the browser so we never miss the redirect.
   const codePromise = waitForCallback()
+  console.log('[auth] loopback server listening on', REDIRECT_URL)
   await shell.openExternal(data.url)
-  const code = await codePromise
+  console.log('[auth] browser opened; waiting for redirect...')
 
-  const { error: exchangeError } = await supabase.auth.exchangeCodeForSession(code)
-  if (exchangeError) throw exchangeError
+  const code = await codePromise
+  console.log('[auth] received callback code (length=%d)', code.length)
+
+  console.log('[auth] calling exchangeCodeForSession...')
+  const exchangePromise = supabase.auth.exchangeCodeForSession(code)
+  const timeoutPromise = new Promise<never>((_, reject) =>
+    setTimeout(
+      () => reject(new Error('exchangeCodeForSession timed out after 30s')),
+      30_000,
+    ),
+  )
+  const result = (await Promise.race([exchangePromise, timeoutPromise])) as Awaited<
+    ReturnType<typeof supabase.auth.exchangeCodeForSession>
+  >
+
+  if (result.error) {
+    console.error('[auth] exchangeCodeForSession error:', result.error)
+    throw result.error
+  }
+  console.log(
+    '[auth] sign-in complete. user =',
+    result.data?.session?.user?.email ?? '(no email)',
+  )
 }
 
 function waitForCallback(): Promise<string> {
@@ -93,6 +120,7 @@ function waitForCallback(): Promise<string> {
     }, OAUTH_TIMEOUT_MS)
 
     const server = http.createServer((req, res) => {
+      console.log('[auth] loopback request:', req.method, req.url)
       if (!req.url || !req.url.startsWith('/callback')) {
         res.writeHead(404)
         res.end()
@@ -102,6 +130,11 @@ function waitForCallback(): Promise<string> {
       const url = new URL(req.url, `http://localhost:${REDIRECT_PORT}`)
       const code = url.searchParams.get('code')
       const oauthError = url.searchParams.get('error')
+      console.log(
+        '[auth] parsed callback params: code=%s error=%s',
+        code ? `<${code.length} chars>` : 'null',
+        oauthError ?? 'null',
+      )
 
       if (oauthError) {
         res.writeHead(400, { 'Content-Type': 'text/html; charset=utf-8' })
@@ -199,9 +232,25 @@ export function registerAuthIpc(broadcast: (status: AuthStatus) => void): void {
     broadcast(await getStatus())
   })
 
-  // Also broadcast whenever Supabase's internal auth state changes (e.g., token refresh, sign-out).
+  // Listen for Supabase's internal auth state changes (token refresh, sign-out, etc).
+  //
+  // CRITICAL: this callback MUST NOT call any awaitable supabase.auth.* method
+  // (getSession, getUser, exchangeCodeForSession, ...). Supabase holds an internal
+  // auth lock while firing this callback; calling back into supabase.auth from
+  // here deadlocks the whole auth flow — which is exactly what was wedging
+  // exchangeCodeForSession on first sign-in.
+  //
+  // Build the status directly from the `session` argument passed to the callback.
   const supabase = getSupabase()
-  supabase.auth.onAuthStateChange(async () => {
-    broadcast(await getStatus())
+  supabase.auth.onAuthStateChange((event, session) => {
+    console.log('[auth] onAuthStateChange event=%s hasSession=%s', event, Boolean(session))
+    const status: AuthStatus = session
+      ? {
+          signedIn: true,
+          email: session.user.email ?? undefined,
+          userId: session.user.id,
+        }
+      : { signedIn: false }
+    broadcast(status)
   })
 }

@@ -1,6 +1,6 @@
 # Conversations
 
-Cliente nativo de WhatsApp para macOS con sidebar de RedThink. Reemplaza a WhatsApp.app.
+Cliente nativo de WhatsApp para macOS con sidebar de reThink. Reemplaza a WhatsApp.app.
 
 > Ver `SPEC.md` para el diseño completo, decisiones y plan de fases.
 
