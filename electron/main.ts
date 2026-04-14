@@ -62,7 +62,41 @@ async function createMainWindow(): Promise<void> {
   // Just zoom the whole pane down so everything is denser, which gives the
   // messages area more breathing room without any CSS injection.
   whatsappView.webContents.on('did-finish-load', () => {
-    whatsappView?.webContents.setZoomFactor(0.8)
+    if (!whatsappView) return
+    whatsappView.webContents.setZoomFactor(0.8)
+
+    // Hide the "Get WhatsApp for Mac" promo banner.
+    // Class names are obfuscated, so we walk up from any text-matching node
+    // until the parent has substantially more text — that's the row container.
+    // A MutationObserver keeps it hidden across WA's re-renders.
+    whatsappView.webContents
+      .executeJavaScript(
+        `
+          (() => {
+            const NEEDLE = 'Get WhatsApp for Mac';
+            function hideBanner() {
+              const all = document.querySelectorAll('a, button, div, span');
+              for (const el of all) {
+                const txt = (el.textContent || '').trim();
+                if (!txt.includes(NEEDLE)) continue;
+                let target = el;
+                while (target.parentElement) {
+                  const parentText = (target.parentElement.textContent || '').trim();
+                  if (parentText.length > txt.length + 40) break;
+                  target = target.parentElement;
+                }
+                target.style.setProperty('display', 'none', 'important');
+              }
+            }
+            hideBanner();
+            const obs = new MutationObserver(() => hideBanner());
+            obs.observe(document.body, { childList: true, subtree: true });
+          })();
+        `,
+      )
+      .catch(() => {
+        /* ignore */
+      })
   })
 
   whatsappView.webContents.setWindowOpenHandler(({ url }) => {
