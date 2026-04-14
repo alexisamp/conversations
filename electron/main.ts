@@ -58,106 +58,11 @@ async function createMainWindow(): Promise<void> {
   })
   whatsappView.webContents.setUserAgent(CHROME_UA)
 
-  // ── WhatsApp layout shaping ────────────────────────────────────────────
-  // Goal: more horizontal room for the messages pane.
-  //
-  // WhatsApp Web's main layout is CSS Grid with hard-coded column widths on
-  // the *parent* of #pane-side (not on #pane-side itself). Narrowing only
-  // #pane-side leaves a blank gutter where the grid column still occupies
-  // the original width. We have to override the parent grid + flex rules.
-  //
-  // Selectors are obfuscated and change between releases, so the strategy is:
-  //   1. Inject CSS that targets stable IDs (#pane-side, #main) and a few
-  //      common attribute selectors that have survived for years.
-  //   2. Run a JS pass that walks up from #pane-side until it finds a grid
-  //      ancestor, then rewrites its grid-template-columns to "280px 1fr".
-  //      That part is robust against class-name churn.
-  //   3. Log layout diagnostics to the main process console so we can
-  //      iterate quickly if a future WA release changes the structure.
-  //
-  // Re-runs on every did-finish-load (so SPA-style reloads of WA are covered).
+  // Don't fight WhatsApp's internal layout — let it render natively.
+  // Just zoom the whole pane down so everything is denser, which gives the
+  // messages area more breathing room without any CSS injection.
   whatsappView.webContents.on('did-finish-load', () => {
-    if (!whatsappView) return
-
-    whatsappView.webContents.setZoomFactor(0.85)
-
-    whatsappView.webContents
-      .insertCSS(
-        `
-          /* 1. Narrow the chat list pane */
-          #pane-side {
-            flex: 0 0 280px !important;
-            width: 280px !important;
-            min-width: 280px !important;
-            max-width: 280px !important;
-          }
-
-          /* 2. Force the main messages pane to fill remaining space */
-          #main,
-          #main > *,
-          [data-tab],
-          .app-wrapper-main {
-            min-width: 0 !important;
-            max-width: none !important;
-          }
-
-          /* 3. Strip any max-width from common WA root containers */
-          #app,
-          #app > div,
-          #app > div > div,
-          .two,
-          .three,
-          ._aigy,
-          .app-wrapper {
-            max-width: none !important;
-          }
-        `,
-      )
-      .catch(() => {
-        /* ignore */
-      })
-
-    // JS pass: walk up from #pane-side, find the grid ancestor, rewrite columns.
-    whatsappView.webContents
-      .executeJavaScript(
-        `
-          (() => {
-            const ps = document.querySelector('#pane-side');
-            if (!ps) return { ok: false, reason: 'no #pane-side' };
-
-            // Walk up looking for a grid container that defines columns.
-            let node = ps.parentElement;
-            let depth = 0;
-            const trail = [];
-            while (node && depth < 8) {
-              const cs = getComputedStyle(node);
-              trail.push({
-                tag: node.tagName,
-                cls: (node.className || '').toString().slice(0, 80),
-                display: cs.display,
-                gridCols: cs.gridTemplateColumns,
-                maxWidth: cs.maxWidth,
-                width: node.offsetWidth,
-              });
-              if (cs.display === 'grid' && cs.gridTemplateColumns && cs.gridTemplateColumns !== 'none') {
-                node.style.setProperty('grid-template-columns', '280px 1fr', 'important');
-                node.style.setProperty('max-width', 'none', 'important');
-                node.style.setProperty('width', '100%', 'important');
-                return { ok: true, fixed: true, trail, fixedClass: (node.className || '').toString().slice(0, 80) };
-              }
-              node = node.parentElement;
-              depth++;
-            }
-            return { ok: true, fixed: false, trail };
-          })()
-        `,
-      )
-      .then((info) => {
-        console.log('[wa-layout]', JSON.stringify(info, null, 2))
-      })
-      .catch((err) => {
-        console.error('[wa-layout] inspect failed:', err)
-      })
+    whatsappView?.webContents.setZoomFactor(0.8)
   })
 
   whatsappView.webContents.setWindowOpenHandler(({ url }) => {
