@@ -198,13 +198,44 @@ function scrapePhotoUrl(): string | null {
   function isProfileSized(img: HTMLImageElement): boolean {
     const w = img.naturalWidth || img.width || parseInt(img.getAttribute('width') ?? '0', 10)
     const h = img.naturalHeight || img.height || parseInt(img.getAttribute('height') ?? '0', 10)
-    // Reject tiny icons; accept anything roughly square and ≥80px
+    // Reject tiny icons and wide-aspect banners. LinkedIn banners are ~4:1
+    // landscape; profile photos are square. Allow any ratio between 0.66 and
+    // 1.5 (roughly ±50% of square) and require at least 80px on a side.
     if (w === 0 && h === 0) return true // unloaded, give it a chance
-    return w >= 80 || h >= 80
+    if (w < 80 && h < 80) return false
+    if (w > 0 && h > 0) {
+      const ratio = w / h
+      if (ratio < 0.66 || ratio > 1.5) return false
+    }
+    return true
   }
 
-  // 1. Structural walk from the name h1 upward — the profile photo lives
-  //    in the top-card ancestor.
+  // 1. Prefer images explicitly labelled as profile photos. LinkedIn reliably
+  //    uses an alt text containing the profile owner's name (e.g. "Camila
+  //    Aldunate") on the profile picture. We match those first.
+  const altCandidates = Array.from(
+    document.querySelectorAll<HTMLImageElement>(
+      'main img[alt], main section img[alt], .pv-top-card img[alt]',
+    ),
+  )
+  for (const img of altCandidates) {
+    const alt = (img.getAttribute('alt') ?? '').toLowerCase()
+    // Skip obvious non-profile images
+    if (
+      alt.includes('background') ||
+      alt.includes('cover') ||
+      alt.includes('banner') ||
+      alt.includes('company logo')
+    ) {
+      continue
+    }
+    if (!isProfileSized(img)) continue
+    const src = readSrc(img)
+    if (src) return src
+  }
+
+  // 2. Structural walk from the name h1 upward — skip images that fail
+  //    the aspect-ratio check (that's how we reject the cover banner).
   const h1 = document.querySelector('main h1') as HTMLElement | null
   if (h1) {
     let container: HTMLElement | null = h1.parentElement

@@ -34,6 +34,13 @@ type ChatIdentity =
 let currentSignature: string | null = null
 // phone → avatarDataUrl cache so we don't re-capture every tick
 const avatarCache = new Map<string, string>()
+// Dedupe captured messages by WhatsApp's own data-id (idempotent per session)
+const processedMessages = new Set<string>()
+// Track when the current chat became active so we can skip the historical
+// render pass. Anything added within 5s of a chat switch is treated as DOM
+// rehydration, not a new inbound/outbound message.
+let currentChatActivatedAt = 0
+let messageObserver: MutationObserver | null = null
 
 // ─────────────────────────────────────────────────────────────────────
 // DOM probes
@@ -184,6 +191,171 @@ function getGroupParticipants(): Participant[] {
 
 let diagnosticLoggedForGroup: string | null = null
 
+// ─────────────────────────────────────────────────────────────────────
+// Per-message capture
+
+type CapturedMessage = {
+  wa_data_id: string
+  chat_phone: string
+  chat_kind: 'person' | 'group'
+  direction: 'inbound' | 'outbound'
+  sender_phone: string | null
+  sender_lid: string | null
+  sender_name: string | null
+  text: string | null
+  timestamp_ms: number
+}
+
+function parseTimestampFromPre(pre: string | null): number | null {
+  // Format: "[HH:MM, DD/MM/YYYY] Sender Name: "
+  if (!pre) return null
+  const m = pre.match(/\[(\d{1,2}):(\d{2}),\s*(\d{1,2})\/(\d{1,2})\/(\d{4})\]/)
+  if (!m) return null
+  const [, hh, mm, dd, mo, yy] = m
+  const d = new Date(Number(yy), Number(mo) - 1, Number(dd), Number(hh), Number(mm))
+  return isNaN(d.getTime()) ? null : d.getTime()
+}
+
+function extractTextFromMessageEl(msg: Element): string | null {
+  // Preferred: the copyable-text span that WA uses for plain text bubbles.
+  const copyable = msg.querySelector<HTMLElement>(
+    'span.selectable-text.copyable-text, span.copyable-text, div.copyable-text span, span.selectable-text',
+  )
+  if (copyable) {
+    const t = copyable.innerText?.trim()
+    if (t) return t
+  }
+  // Last resort: innerText of the message minus any trailing "HH:MM" timestamp.
+  const raw = (msg as HTMLElement).innerText?.trim() ?? ''
+  if (!raw) return null
+  return raw.replace(/\s*\d{1,2}:\d{2}\s*$/, '').trim() || null
+}
+
+function buildCapturedMessage(msg: Element): CapturedMessage | null {
+  const dataId = msg.getAttribute('data-id')
+  if (!dataId || !dataId.includes('@')) return null
+
+  const identity = getActiveChatIdentity()
+  if (identity.kind === 'none') return null
+
+  // Direction: message-out marker in class name indicates outbound.
+  const isOutbound = msg.classList.contains('message-out') ||
+    msg.querySelector('.message-out') !== null ||
+    dataId.startsWith('true_')
+
+  // Chat identifier in our own normalized form.
+  const chatPhone =
+    identity.kind === 'person'
+      ? '+' + identity.phone
+      : identity.groupId // groups use the raw groupid@g.us
+  const chatKind: 'person' | 'group' = identity.kind
+
+  // For group messages, extract the sender (phone or LID) from the data-id.
+  let senderPhone: string | null = null
+  let senderLid: string | null = null
+  if (identity.kind === 'group' && !isOutbound) {
+    const sender = lastSenderIdentity(dataId)
+    if (sender) {
+      if ('phone' in sender) senderPhone = '+' + sender.phone
+      else senderLid = sender.lid
+    }
+  }
+
+  // Sender name + timestamp from data-pre-plain-text.
+  const preEl = msg.querySelector<HTMLElement>('[data-pre-plain-text]')
+  const pre = preEl?.getAttribute('data-pre-plain-text') ?? null
+  const nameMatch = pre?.match(/\]\s*([^:]+):/)
+  const senderName = nameMatch ? nameMatch[1].trim() : null
+  const timestampMs = parseTimestampFromPre(pre) ?? Date.now()
+
+  const text = extractTextFromMessageEl(msg)
+
+  return {
+    wa_data_id: dataId,
+    chat_phone: chatPhone,
+    chat_kind: chatKind,
+    direction: isOutbound ? 'outbound' : 'inbound',
+    sender_phone: senderPhone,
+    sender_lid: senderLid,
+    sender_name: senderName,
+    text,
+    timestamp_ms: timestampMs,
+  }
+}
+
+function handleNewMessageNode(node: Element): void {
+  if (!node || node.nodeType !== Node.ELEMENT_NODE) return
+
+  // Direct match: the node itself carries a message data-id with @c.us or @lid
+  const isDirect =
+    node.hasAttribute('data-id') &&
+    (node.getAttribute('data-id')?.includes('@c.us') ||
+      node.getAttribute('data-id')?.includes('@lid'))
+
+  const candidates: Element[] = []
+  if (isDirect) candidates.push(node)
+  // Nested: the added node is a container holding one or more message rows.
+  candidates.push(
+    ...Array.from(node.querySelectorAll('[data-id*="@c.us"], [data-id*="@lid"]')),
+  )
+
+  for (const el of candidates) {
+    const dataId = el.getAttribute('data-id')
+    if (!dataId) continue
+
+    // Dedupe
+    if (processedMessages.has(dataId)) continue
+    processedMessages.add(dataId)
+
+    // Skip historical-render pass: anything added within 5s of the chat
+    // becoming active is WA's own DOM rehydration, not a live message.
+    if (Date.now() - currentChatActivatedAt < 5000) continue
+
+    const captured = buildCapturedMessage(el)
+    if (!captured) continue
+
+    // Scope cut (phase 3b): skip group messages entirely. The session
+    // capture pipeline is 1:1 only for now; groups are visual-only and
+    // don't generate interactions or health score changes.
+    if (captured.chat_kind === 'group') continue
+
+    console.log(
+      '[wa-preload] msg',
+      captured.direction,
+      captured.chat_phone,
+      captured.text ? captured.text.slice(0, 40) : '(no text)',
+    )
+    ipcRenderer.send('wa:message', captured)
+  }
+}
+
+function attachMessageObserver(): void {
+  if (messageObserver) return
+  const observe = (panel: Element): void => {
+    messageObserver = new MutationObserver((mutations) => {
+      for (const m of mutations) {
+        m.addedNodes.forEach((node) => {
+          if (node.nodeType === Node.ELEMENT_NODE) {
+            handleNewMessageNode(node as Element)
+          }
+        })
+      }
+    })
+    messageObserver.observe(panel, { childList: true, subtree: true })
+    console.log('[wa-preload] message observer attached')
+  }
+  const tryAttach = (): void => {
+    const panel =
+      document.querySelector('[data-testid="conversation-panel-messages"]') ??
+      document.querySelector('div.copyable-area') ??
+      document.querySelector('#main') ??
+      document.body
+    if (panel) observe(panel)
+    else setTimeout(tryAttach, 500)
+  }
+  tryAttach()
+}
+
 function tick(): void {
   let identity: ChatIdentity = { kind: 'none' }
   try {
@@ -235,6 +407,9 @@ function tick(): void {
 
   if (signature === currentSignature) return
   currentSignature = signature
+  // New chat context → reset the "skip history" window so the next 5s of
+  // DOM mutations are treated as rehydration, not new messages.
+  currentChatActivatedAt = Date.now()
 
   if (identity.kind === 'none') {
     console.log('[wa-preload] no active chat')
@@ -253,6 +428,7 @@ function start(): void {
   console.log('[wa-preload] active chat detector started')
   setInterval(tick, POLL_INTERVAL_MS)
   setTimeout(tick, 100)
+  attachMessageObserver()
 }
 
 if (document.readyState === 'loading') {

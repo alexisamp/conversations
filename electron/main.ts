@@ -22,6 +22,7 @@ import { loadEnvFile } from './supabase/env'
 import { registerAuthIpc } from './supabase/auth'
 import { registerContactIpc } from './supabase/contacts'
 import { applyLayout } from './layout'
+import { insertMessage, type MessageInput } from './db/local'
 
 loadEnvFile()
 
@@ -728,6 +729,27 @@ function registerIpc(): void {
     waContext = payload
     if (activeTab === 'wa') {
       sidebarView?.webContents.send('sidebar:context', { tab: 'wa', state: payload })
+    }
+  })
+
+  // WhatsApp preload → per-message capture. Phase 3b writes raw text to the
+  // local SQLite store only; session management + Supabase sync come in 3c/3e.
+  ipcMain.on('wa:message', (_event, payload: MessageInput) => {
+    try {
+      if (!payload || !payload.wa_data_id) return
+      if (payload.chat_kind === 'group') return // scope: 1:1 only for now
+      const id = insertMessage(payload)
+      if (id != null) {
+        console.log(
+          '[main] wa:message inserted id=%s chat=%s dir=%s text="%s"',
+          id,
+          payload.chat_phone,
+          payload.direction,
+          (payload.text ?? '').slice(0, 40),
+        )
+      }
+    } catch (err) {
+      console.error('[main] insertMessage failed:', err)
     }
   })
 
