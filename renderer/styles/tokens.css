@@ -1005,3 +1005,30 @@ body {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* ────────── LinkedIn empty state ────────── */
+.li-empty {
+  padding: 14px;
+}
+.li-empty-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--mercury);
+  margin-bottom: 10px;
+}
+.li-empty-info {
+  flex: 1;
+  min-width: 0;
+}
+.li-empty-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--midnight);
+}
+.li-empty-title {
+  font-size: 11px;
+  color: var(--shuttle);
+  margin-top: 2px;
+}

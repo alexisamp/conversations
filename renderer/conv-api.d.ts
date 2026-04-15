@@ -108,7 +108,7 @@ export type GroupParticipant = {
   avatarDataUrl: string | null
 }
 
-export type ChatChangedEvent =
+export type WaState =
   | { kind: 'none' }
   | { kind: 'person'; phone: string; name: string | null }
   | {
@@ -117,6 +117,21 @@ export type ChatChangedEvent =
       name: string | null
       participants: GroupParticipant[]
     }
+
+export type LiState =
+  | { kind: 'none' }
+  | {
+      kind: 'profile'
+      url: string
+      slug: string
+      name: string | null
+      jobTitle: string | null
+      avatarDataUrl: string | null
+    }
+
+export type SidebarContext =
+  | { tab: 'wa'; state: WaState }
+  | { tab: 'li'; state: LiState }
 
 export type ConvApi = {
   auth: {
@@ -127,6 +142,7 @@ export type ConvApi = {
   }
   contact: {
     byPhone(phone: string): Promise<ContactDetail | null>
+    byLinkedinUrl(url: string): Promise<ContactDetail | null>
     logInteraction(input: LogInteractionInput): Promise<WriteResult>
     addValueLog(input: AddValueLogInput): Promise<WriteResult>
     briefsByPhones(phones: string[]): Promise<Record<string, ContactBrief | null>>
@@ -134,14 +150,15 @@ export type ConvApi = {
     createFromParticipant(input: CreateContactInput): Promise<CreateContactResult>
     attachPhone(input: AttachPhoneInput): Promise<WriteResult>
   }
-  chat: {
-    onChanged(cb: (event: ChatChangedEvent) => void): void
+  sidebar: {
+    onContext(cb: (ctx: SidebarContext) => void): void
+    toggle(): Promise<void>
   }
   wa: {
     navigateToDm(phone: string): Promise<{ ok: boolean; error?: string }>
   }
-  sidebar: {
-    toggle(): Promise<void>
+  li: {
+    navigate(url: string): Promise<{ ok: boolean; error?: string }>
   }
 }
 

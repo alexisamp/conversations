@@ -111,7 +111,7 @@ export type GroupParticipant = {
   avatarDataUrl: string | null
 }
 
-export type ChatChangedEvent =
+export type WaState =
   | { kind: 'none' }
   | { kind: 'person'; phone: string; name: string | null }
   | {
@@ -120,6 +120,21 @@ export type ChatChangedEvent =
       name: string | null
       participants: GroupParticipant[]
     }
+
+export type LiState =
+  | { kind: 'none' }
+  | {
+      kind: 'profile'
+      url: string
+      slug: string
+      name: string | null
+      jobTitle: string | null
+      avatarDataUrl: string | null
+    }
+
+export type SidebarContext =
+  | { tab: 'wa'; state: WaState }
+  | { tab: 'li'; state: LiState }
 
 const api = {
   auth: {
@@ -133,6 +148,8 @@ const api = {
   contact: {
     byPhone: (phone: string): Promise<ContactDetail | null> =>
       ipcRenderer.invoke('contact:byPhone', phone),
+    byLinkedinUrl: (url: string): Promise<ContactDetail | null> =>
+      ipcRenderer.invoke('contact:byLinkedinUrl', url),
     logInteraction: (input: LogInteractionInput): Promise<WriteResult> =>
       ipcRenderer.invoke('contact:logInteraction', input),
     addValueLog: (input: AddValueLogInput): Promise<WriteResult> =>
@@ -148,19 +165,21 @@ const api = {
     attachPhone: (input: AttachPhoneInput): Promise<WriteResult> =>
       ipcRenderer.invoke('contact:attachPhone', input),
   },
-  chat: {
-    onChanged: (cb: (event: ChatChangedEvent) => void): void => {
-      ipcRenderer.on('chat:changed', (_event, payload: ChatChangedEvent) =>
+  sidebar: {
+    onContext: (cb: (ctx: SidebarContext) => void): void => {
+      ipcRenderer.on('sidebar:context', (_event, payload: SidebarContext) =>
         cb(payload),
       )
     },
+    toggle: (): Promise<void> => ipcRenderer.invoke('sidebar:toggle'),
   },
   wa: {
     navigateToDm: (phone: string): Promise<{ ok: boolean; error?: string }> =>
       ipcRenderer.invoke('wa:navigate-to-dm', phone),
   },
-  sidebar: {
-    toggle: (): Promise<void> => ipcRenderer.invoke('sidebar:toggle'),
+  li: {
+    navigate: (url: string): Promise<{ ok: boolean; error?: string }> =>
+      ipcRenderer.invoke('li:navigate', url),
   },
 }
 

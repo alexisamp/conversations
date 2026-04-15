@@ -1,66 +1,54 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { ContactDetailScreen } from './ContactDetailScreen'
 import { GroupScreen } from './GroupScreen'
-import type { ContactDetail, GroupParticipant } from '../conv-api'
+import { LinkedinProfileScreen } from './LinkedinProfileScreen'
+import type { ContactDetail, SidebarContext } from '../conv-api'
 
-type LookupState =
+type PersonLookupState =
   | { kind: 'idle' }
-  | { kind: 'no-active-chat' }
-  | { kind: 'loading-person'; phone: string }
-  | { kind: 'person-not-found'; phone: string; waName: string | null }
-  | { kind: 'person-found'; contact: ContactDetail }
-  | {
-      kind: 'group'
-      groupId: string
-      name: string | null
-      participants: GroupParticipant[]
-    }
+  | { kind: 'loading'; phone: string }
+  | { kind: 'not-found'; phone: string; waName: string | null }
+  | { kind: 'found'; contact: ContactDetail }
   | { kind: 'error'; message: string }
 
 export function MainScreen({ email }: { email: string }) {
   const [phoneInput, setPhoneInput] = useState('')
-  const [state, setState] = useState<LookupState>({ kind: 'no-active-chat' })
+  const [context, setContext] = useState<SidebarContext>({
+    tab: 'wa',
+    state: { kind: 'none' },
+  })
+  const [personLookup, setPersonLookup] = useState<PersonLookupState>({ kind: 'idle' })
   const lastHitPhoneRef = useRef<string | null>(null)
 
   const runPersonLookup = useCallback(
     async (rawPhone: string, waName: string | null = null) => {
-      setState({ kind: 'loading-person', phone: rawPhone })
+      setPersonLookup({ kind: 'loading', phone: rawPhone })
       try {
         const contact = await window.conv.contact.byPhone(rawPhone)
         if (contact) {
-          setState({ kind: 'person-found', contact })
+          setPersonLookup({ kind: 'found', contact })
           lastHitPhoneRef.current = rawPhone
         } else {
-          setState({ kind: 'person-not-found', phone: rawPhone, waName })
+          setPersonLookup({ kind: 'not-found', phone: rawPhone, waName })
         }
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Lookup failed'
-        setState({ kind: 'error', message })
+        setPersonLookup({ kind: 'error', message })
       }
     },
     [],
   )
 
-  // Subscribe to active-chat changes from the WhatsApp preload.
+  // Subscribe to the unified sidebar-context events from main.
   useEffect(() => {
-    window.conv.chat.onChanged((event) => {
-      if (event.kind === 'none') {
-        setState({ kind: 'no-active-chat' })
+    window.conv.sidebar.onContext((ctx) => {
+      setContext(ctx)
+      if (ctx.tab === 'wa' && ctx.state.kind === 'person') {
+        runPersonLookup(ctx.state.phone, ctx.state.name)
+      } else if (ctx.tab === 'wa' && ctx.state.kind === 'none') {
+        setPersonLookup({ kind: 'idle' })
         lastHitPhoneRef.current = null
-        return
       }
-      if (event.kind === 'person') {
-        runPersonLookup(event.phone, event.name)
-        return
-      }
-      // group
-      setState({
-        kind: 'group',
-        groupId: event.groupId,
-        name: event.name,
-        participants: event.participants,
-      })
-      lastHitPhoneRef.current = null
     })
   }, [runPersonLookup])
 
@@ -103,7 +91,7 @@ export function MainScreen({ email }: { email: string }) {
           />
           <button
             type="submit"
-            disabled={state.kind === 'loading-person' || !phoneInput.trim()}
+            disabled={personLookup.kind === 'loading' || !phoneInput.trim()}
           >
             Look up
           </button>
@@ -111,40 +99,84 @@ export function MainScreen({ email }: { email: string }) {
       </details>
 
       <div className="body">
-        {state.kind === 'no-active-chat' && (
-          <div className="empty">
-            <strong>No active chat</strong>
-            <div className="muted small">
-              Open a WhatsApp conversation to see contact details.
-            </div>
-          </div>
-        )}
-        {state.kind === 'idle' && <div className="empty">Idle.</div>}
-        {state.kind === 'loading-person' && (
-          <div className="loading">Looking up {state.phone}…</div>
-        )}
-        {state.kind === 'person-not-found' && (
-          <div className="empty">
-            <strong>Not in reThink</strong>
-            <div className="muted">{state.waName ?? state.phone}</div>
-            <div className="muted small">{state.phone}</div>
-            <div className="muted small">
-              Mapping / create person coming in Phase 4.
-            </div>
-          </div>
-        )}
-        {state.kind === 'error' && <div className="error">{state.message}</div>}
-        {state.kind === 'person-found' && (
-          <ContactDetailScreen contact={state.contact} onRefresh={handleRefresh} />
-        )}
-        {state.kind === 'group' && (
-          <GroupScreen
-            groupId={state.groupId}
-            groupName={state.name}
-            participants={state.participants}
-          />
-        )}
+        <Body
+          context={context}
+          personLookup={personLookup}
+          onRefreshPerson={handleRefresh}
+        />
       </div>
     </div>
   )
+}
+
+// ─── Body router ──────────────────────────────────────────────────────
+
+function Body({
+  context,
+  personLookup,
+  onRefreshPerson,
+}: {
+  context: SidebarContext
+  personLookup: PersonLookupState
+  onRefreshPerson: () => void
+}) {
+  if (context.tab === 'wa') {
+    if (context.state.kind === 'none') {
+      return (
+        <div className="empty">
+          <strong>No active chat</strong>
+          <div className="muted small">
+            Open a WhatsApp conversation to see contact details.
+          </div>
+        </div>
+      )
+    }
+    if (context.state.kind === 'group') {
+      return (
+        <GroupScreen
+          groupId={context.state.groupId}
+          groupName={context.state.name}
+          participants={context.state.participants}
+        />
+      )
+    }
+    // kind === 'person' → show the personLookup state
+    if (personLookup.kind === 'loading') {
+      return <div className="loading">Looking up {personLookup.phone}…</div>
+    }
+    if (personLookup.kind === 'not-found') {
+      return (
+        <div className="empty">
+          <strong>Not in reThink</strong>
+          <div className="muted">{personLookup.waName ?? personLookup.phone}</div>
+          <div className="muted small">{personLookup.phone}</div>
+        </div>
+      )
+    }
+    if (personLookup.kind === 'error') {
+      return <div className="error">{personLookup.message}</div>
+    }
+    if (personLookup.kind === 'found') {
+      return (
+        <ContactDetailScreen
+          contact={personLookup.contact}
+          onRefresh={onRefreshPerson}
+        />
+      )
+    }
+    return <div className="empty">Idle.</div>
+  }
+
+  // LinkedIn tab
+  if (context.state.kind === 'none') {
+    return (
+      <div className="empty">
+        <strong>LinkedIn</strong>
+        <div className="muted small">
+          Open a profile page to see the contact in reThink.
+        </div>
+      </div>
+    )
+  }
+  return <LinkedinProfileScreen state={context.state} />
 }

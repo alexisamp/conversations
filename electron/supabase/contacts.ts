@@ -5,6 +5,7 @@
 import { ipcMain } from 'electron'
 import { getSupabase } from './client'
 import { phoneVariants } from '../utils/phone'
+import { linkedinUrlVariants } from '../utils/linkedin'
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -163,10 +164,60 @@ async function resolveContactIdByPhone(phone: string): Promise<string | null> {
   return null
 }
 
-async function findContactByPhone(phone: string): Promise<ContactDetail | null> {
+async function resolveContactIdByLinkedinUrl(url: string): Promise<string | null> {
   const supabase = getSupabase()
+  const variants = linkedinUrlVariants(url)
+  if (variants.length === 0) return null
+
+  // Source 1: contact_channels (unified)
+  try {
+    const { data } = await supabase
+      .from('contact_channels')
+      .select('outreach_log_id')
+      .eq('channel', 'linkedin')
+      .in('channel_identifier', variants)
+      .limit(1)
+      .maybeSingle()
+    if (data) {
+      console.log('[contacts] LI match via contact_channels →', url)
+      return data.outreach_log_id as string
+    }
+  } catch (err) {
+    console.warn('[contacts] contact_channels LI query failed:', err)
+  }
+
+  // Source 2: direct outreach_logs.linkedin_url
+  {
+    const { data } = await supabase
+      .from('outreach_logs')
+      .select('id')
+      .in('linkedin_url', variants)
+      .limit(1)
+      .maybeSingle()
+    if (data) {
+      console.log('[contacts] LI match via outreach_logs.linkedin_url →', url)
+      return data.id as string
+    }
+  }
+
+  console.log('[contacts] no LI match for →', url)
+  return null
+}
+
+async function findContactByLinkedinUrl(url: string): Promise<ContactDetail | null> {
+  const contactId = await resolveContactIdByLinkedinUrl(url)
+  if (!contactId) return null
+  return loadContactDetail(contactId)
+}
+
+async function findContactByPhone(phone: string): Promise<ContactDetail | null> {
   const contactId = await resolveContactIdByPhone(phone)
   if (!contactId) return null
+  return loadContactDetail(contactId)
+}
+
+async function loadContactDetail(contactId: string): Promise<ContactDetail | null> {
+  const supabase = getSupabase()
 
   const contactPromise = supabase
     .from('outreach_logs')
@@ -597,5 +648,8 @@ export function registerContactIpc(): void {
     'contact:attachPhone',
     (_event, input: { contact_id: string; phone: string; waName: string | null }) =>
       attachPhoneToExistingContact(input),
+  )
+  ipcMain.handle('contact:byLinkedinUrl', (_event, url: string) =>
+    findContactByLinkedinUrl(url),
   )
 }

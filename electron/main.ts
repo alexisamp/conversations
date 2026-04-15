@@ -1,5 +1,12 @@
 // Conversations — Electron main process
-// Phase 1: BaseWindow + two WebContentsView (WhatsApp left, React sidebar right).
+//
+// Phase 2.6 — tabbed architecture:
+//   - TabBarView at the top (inline HTML)
+//   - Two content views: WhatsApp and LinkedIn (switchable, sessions persist)
+//   - Sidebar on the right (shared across tabs, context-aware)
+//
+// The main process gates sidebar events so only the active tab's latest
+// context is shown. Switching tabs re-emits the stored context.
 
 import {
   app,
@@ -23,16 +30,107 @@ const CHROME_UA =
   '(KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36'
 
 const WHATSAPP_URL = 'https://web.whatsapp.com/'
+const LINKEDIN_URL = 'https://www.linkedin.com/feed/'
 
 const IS_DEV = process.env.CONV_DEV === '1'
 const SIDEBAR_DEV_URL = 'http://localhost:5173/'
 const SIDEBAR_PROD_FILE = path.join(__dirname, '../renderer/index.html')
 
+// ─── State ───────────────────────────────────────────────────────────
+type Tab = 'wa' | 'li'
+
 let mainWindow: BaseWindow | null = null
+let tabBarView: WebContentsView | null = null
 let whatsappView: WebContentsView | null = null
+let linkedinView: WebContentsView | null = null
 let sidebarView: WebContentsView | null = null
 let sidebarVisible = true
+let activeTab: Tab = 'wa'
 
+// Cached context per tab so we can re-emit on tab switch.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let waContext: any = { kind: 'none' }
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let liContext: any = { kind: 'none' }
+
+// ─── Tab bar HTML ────────────────────────────────────────────────────
+const TAB_BAR_HTML = `<!doctype html>
+<html lang="en"><head><meta charset="utf-8" /><style>
+  :root {
+    --burnham: #003720;
+    --shuttle: #536471;
+    --mercury: #e3e3e3;
+    --bg: #f7f7f5;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
+    background: var(--bg);
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-app-region: drag;
+  }
+  .tab-bar {
+    display: flex;
+    align-items: center;
+    height: 38px;
+    padding: 0 10px;
+    border-bottom: 1px solid var(--mercury);
+    gap: 4px;
+  }
+  .tab {
+    -webkit-app-region: no-drag;
+    background: transparent;
+    border: none;
+    padding: 6px 14px;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--shuttle);
+    cursor: pointer;
+    border-radius: 6px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-family: inherit;
+  }
+  .tab:hover { background: rgba(0, 55, 32, 0.05); }
+  .tab.active {
+    background: white;
+    color: var(--burnham);
+    font-weight: 600;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
+  }
+  .tab .dot {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: currentColor;
+    opacity: 0.6;
+  }
+  .tab .shortcut {
+    font-size: 10px;
+    color: var(--shuttle);
+    opacity: 0.5;
+    font-weight: 400;
+    margin-left: 2px;
+  }
+  .tab.active .shortcut { color: var(--burnham); opacity: 0.7; }
+</style></head><body>
+  <div class="tab-bar">
+    <button class="tab active" data-tab="wa"><span class="dot" style="background:#25D366"></span>WhatsApp<span class="shortcut">⌘1</span></button>
+    <button class="tab" data-tab="li"><span class="dot" style="background:#0A66C2"></span>LinkedIn<span class="shortcut">⌘2</span></button>
+  </div>
+  <script>
+    const tabs = document.querySelectorAll('.tab');
+    tabs.forEach(el => {
+      el.addEventListener('click', () => window.convTab.switchTab(el.dataset.tab));
+    });
+    window.convTab.onActiveChanged((name) => {
+      tabs.forEach(el => el.classList.toggle('active', el.dataset.tab === name));
+    });
+  </script>
+</body></html>`
+
+// ─── Window creation ─────────────────────────────────────────────────
 async function createMainWindow(): Promise<void> {
   session.defaultSession.setUserAgent(CHROME_UA)
 
@@ -42,11 +140,25 @@ async function createMainWindow(): Promise<void> {
     minWidth: 900,
     minHeight: 600,
     title: 'Conversations',
-    titleBarStyle: 'default',
+    titleBarStyle: 'hiddenInset',
+    trafficLightPosition: { x: 12, y: 10 },
     backgroundColor: '#111b21',
   })
 
-  // ---------- WhatsApp view ----------
+  // ── Tab bar view ──
+  tabBarView = new WebContentsView({
+    webPreferences: {
+      preload: path.join(__dirname, 'preload-tabbar.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false,
+    },
+  })
+  await tabBarView.webContents.loadURL(
+    'data:text/html;charset=utf-8,' + encodeURIComponent(TAB_BAR_HTML),
+  )
+
+  // ── WhatsApp view ──
   whatsappView = new WebContentsView({
     webPreferences: {
       preload: path.join(__dirname, 'preload-whatsapp.js'),
@@ -57,126 +169,78 @@ async function createMainWindow(): Promise<void> {
     },
   })
   whatsappView.webContents.setUserAgent(CHROME_UA)
-
-  // ── Diagnostic listeners ──────────────────────────────────────────────
-  // Forward all of WhatsApp's renderer console messages to the main process
-  // terminal so we can see preload logs + WA's own errors without opening
-  // DevTools manually.
-  whatsappView.webContents.on(
-    'console-message',
-    (_event, level, message, line, sourceId) => {
-      const levels = ['VERBOSE', 'INFO', 'WARNING', 'ERROR']
-      const tag = levels[level] ?? `L${level}`
-      console.log(`[wa:${tag}] ${message}` + (sourceId ? ` (${sourceId}:${line})` : ''))
-    },
-  )
-  whatsappView.webContents.on('did-fail-load', (_e, code, desc, url, isMain) => {
-    console.error(
-      `[wa] did-fail-load: code=${code} desc=${desc} url=${url} isMainFrame=${isMain}`,
-    )
-  })
-  whatsappView.webContents.on('preload-error', (_e, preloadPath, error) => {
-    console.error('[wa] preload-error:', preloadPath, error)
-  })
-  whatsappView.webContents.on('render-process-gone', (_e, details) => {
-    console.error('[wa] render-process-gone:', details)
-  })
-  whatsappView.webContents.on('unresponsive', () => {
-    console.error('[wa] unresponsive')
-  })
-
-  // Don't fight WhatsApp's internal layout — let it render natively.
-  // Just zoom the whole pane down so everything is denser, which gives the
-  // messages area more breathing room without any CSS injection.
-  whatsappView.webContents.on('did-finish-load', () => {
-    if (!whatsappView) return
-    whatsappView.webContents.setZoomFactor(0.8)
-
-    // Hide the "Get WhatsApp for Mac" promo banner.
-    //
-    // Performance notes:
-    // - Query only <a> and <button> (the banner is a link). Walking every
-    //   div/span on every mutation was DoS-ing WhatsApp's first paint.
-    // - Throttle the MutationObserver via requestAnimationFrame so we run
-    //   at most once per frame instead of once per mutation.
-    // - Initial findAndHide() calls at +500ms and +2000ms catch the banner
-    //   when WA finishes its first render.
-    whatsappView.webContents
-      .executeJavaScript(
-        `
-          (() => {
-            const NEEDLE = 'Get WhatsApp for Mac';
-            let scheduled = false;
-            function findAndHide() {
-              const candidates = document.querySelectorAll('a, button');
-              for (const el of candidates) {
-                const txt = (el.textContent || '').trim();
-                if (!txt.includes(NEEDLE)) continue;
-                let target = el;
-                while (target.parentElement) {
-                  const parentText = (target.parentElement.textContent || '').trim();
-                  if (parentText.length > txt.length + 40) break;
-                  target = target.parentElement;
-                }
-                target.style.setProperty('display', 'none', 'important');
-                return true;
-              }
-              return false;
-            }
-            function schedule() {
-              if (scheduled) return;
-              scheduled = true;
-              requestAnimationFrame(() => {
-                scheduled = false;
-                findAndHide();
-              });
-            }
-            setTimeout(findAndHide, 500);
-            setTimeout(findAndHide, 2000);
-            const obs = new MutationObserver(schedule);
-            obs.observe(document.body, { childList: true, subtree: true });
-          })();
-        `,
-      )
-      .catch(() => {
-        /* ignore */
-      })
-  })
-
+  attachDiagnosticListeners(whatsappView, 'wa')
   whatsappView.webContents.setWindowOpenHandler(({ url }) => {
-    shell.openExternal(url).catch(() => {})
+    handleExternalLink(url)
     return { action: 'deny' }
   })
   whatsappView.webContents.on('will-navigate', (event, url) => {
     if (!url.startsWith('https://web.whatsapp.com')) {
       event.preventDefault()
-      shell.openExternal(url).catch(() => {})
+      handleExternalLink(url)
     }
   })
+  whatsappView.webContents.on('did-finish-load', () => {
+    whatsappView?.webContents.setZoomFactor(0.8)
+    injectBannerHider(whatsappView!)
+  })
 
-  // ---------- Sidebar view ----------
+  // ── LinkedIn view ──
+  linkedinView = new WebContentsView({
+    webPreferences: {
+      preload: path.join(__dirname, 'preload-linkedin.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false,
+      partition: 'persist:linkedin',
+    },
+  })
+  linkedinView.webContents.setUserAgent(CHROME_UA)
+  attachDiagnosticListeners(linkedinView, 'li')
+  linkedinView.webContents.setWindowOpenHandler(({ url }) => {
+    // If LinkedIn opens a new window to another LI profile, navigate in-place.
+    if (url.includes('linkedin.com')) {
+      linkedinView?.webContents.loadURL(url).catch(() => {})
+      return { action: 'deny' }
+    }
+    handleExternalLink(url)
+    return { action: 'deny' }
+  })
+
+  // ── Sidebar view ──
   sidebarView = new WebContentsView({
     webPreferences: {
       preload: path.join(__dirname, 'preload-sidebar.js'),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false,
-      // Separate partition so the sidebar never shares cookies with WhatsApp.
       partition: 'persist:sidebar',
     },
   })
-
-  mainWindow.contentView.addChildView(whatsappView)
-  mainWindow.contentView.addChildView(sidebarView)
-
-  applyLayout(mainWindow, whatsappView, sidebarView, sidebarVisible)
-  mainWindow.on('resize', () => {
-    if (!mainWindow || !whatsappView || !sidebarView) return
-    applyLayout(mainWindow, whatsappView, sidebarView, sidebarVisible)
+  sidebarView.webContents.setWindowOpenHandler(({ url }) => {
+    // External links from the sidebar (e.g., the LinkedIn chip) should
+    // route to the LinkedIn tab rather than opening a new Electron window.
+    if (url.includes('linkedin.com')) {
+      switchTab('li')
+      linkedinView?.webContents.loadURL(url).catch(() => {})
+      return { action: 'deny' }
+    }
+    handleExternalLink(url)
+    return { action: 'deny' }
   })
 
-  // Load content
+  // ── Add to window (order matters: later = on top in z-order) ──
+  mainWindow.contentView.addChildView(whatsappView)
+  mainWindow.contentView.addChildView(linkedinView)
+  mainWindow.contentView.addChildView(sidebarView)
+  mainWindow.contentView.addChildView(tabBarView)
+
+  refreshLayout()
+  mainWindow.on('resize', refreshLayout)
+
+  // ── Load content ──
   await whatsappView.webContents.loadURL(WHATSAPP_URL)
+  await linkedinView.webContents.loadURL(LINKEDIN_URL)
 
   if (IS_DEV) {
     await sidebarView.webContents.loadURL(SIDEBAR_DEV_URL)
@@ -184,25 +248,120 @@ async function createMainWindow(): Promise<void> {
     await sidebarView.webContents.loadFile(SIDEBAR_PROD_FILE)
   }
 
+  // Broadcast initial active tab to the tab bar
+  tabBarView.webContents.send('tab:active-changed', activeTab)
+
   if (process.env.CONV_DEVTOOLS === '1') {
     sidebarView.webContents.openDevTools({ mode: 'detach' })
-    whatsappView.webContents.openDevTools({ mode: 'detach' })
   }
 
   mainWindow.on('closed', () => {
     mainWindow = null
+    tabBarView = null
     whatsappView = null
+    linkedinView = null
     sidebarView = null
   })
 }
 
-function toggleSidebar(): void {
-  if (!mainWindow || !whatsappView || !sidebarView) return
-  sidebarVisible = !sidebarVisible
-  applyLayout(mainWindow, whatsappView, sidebarView, sidebarVisible)
+// ─── Helpers ─────────────────────────────────────────────────────────
+
+function refreshLayout(): void {
+  if (!mainWindow || !tabBarView || !whatsappView || !linkedinView || !sidebarView) return
+  const active = activeTab === 'wa' ? whatsappView : linkedinView
+  const inactive = activeTab === 'wa' ? [linkedinView] : [whatsappView]
+  applyLayout({
+    win: mainWindow,
+    tabBarView,
+    activeContentView: active,
+    inactiveContentViews: inactive,
+    sidebarView,
+    sidebarVisible,
+  })
 }
 
-// ---------- Application menu ----------
+function switchTab(next: Tab): void {
+  if (next === activeTab) return
+  activeTab = next
+  refreshLayout()
+  tabBarView?.webContents.send('tab:active-changed', activeTab)
+  // Re-emit the context for the newly active tab
+  const context = activeTab === 'wa' ? waContext : liContext
+  sidebarView?.webContents.send('sidebar:context', { tab: activeTab, state: context })
+}
+
+function toggleSidebar(): void {
+  sidebarVisible = !sidebarVisible
+  refreshLayout()
+}
+
+function handleExternalLink(url: string): void {
+  if (url.startsWith('https://') || url.startsWith('http://')) {
+    shell.openExternal(url).catch(() => {})
+  }
+}
+
+function attachDiagnosticListeners(view: WebContentsView, label: 'wa' | 'li'): void {
+  view.webContents.on(
+    'console-message',
+    (_event, level, message, line, sourceId) => {
+      const levels = ['VERBOSE', 'INFO', 'WARNING', 'ERROR']
+      const tag = levels[level] ?? `L${level}`
+      console.log(`[${label}:${tag}] ${message}` + (sourceId ? ` (${sourceId}:${line})` : ''))
+    },
+  )
+  view.webContents.on('did-fail-load', (_e, code, desc, url, isMain) => {
+    console.error(`[${label}] did-fail-load: code=${code} desc=${desc} url=${url} main=${isMain}`)
+  })
+  view.webContents.on('preload-error', (_e, preloadPath, error) => {
+    console.error(`[${label}] preload-error:`, preloadPath, error)
+  })
+  view.webContents.on('render-process-gone', (_e, details) => {
+    console.error(`[${label}] render-process-gone:`, details)
+  })
+}
+
+function injectBannerHider(view: WebContentsView): void {
+  view.webContents
+    .executeJavaScript(
+      `
+        (() => {
+          const NEEDLE = 'Get WhatsApp for Mac';
+          let scheduled = false;
+          function findAndHide() {
+            const candidates = document.querySelectorAll('a, button');
+            for (const el of candidates) {
+              const txt = (el.textContent || '').trim();
+              if (!txt.includes(NEEDLE)) continue;
+              let target = el;
+              while (target.parentElement) {
+                const parentText = (target.parentElement.textContent || '').trim();
+                if (parentText.length > txt.length + 40) break;
+                target = target.parentElement;
+              }
+              target.style.setProperty('display', 'none', 'important');
+              return true;
+            }
+            return false;
+          }
+          function schedule() {
+            if (scheduled) return;
+            scheduled = true;
+            requestAnimationFrame(() => { scheduled = false; findAndHide(); });
+          }
+          setTimeout(findAndHide, 500);
+          setTimeout(findAndHide, 2000);
+          const obs = new MutationObserver(schedule);
+          obs.observe(document.body, { childList: true, subtree: true });
+        })();
+      `,
+    )
+    .catch(() => {
+      /* ignore */
+    })
+}
+
+// ─── Application menu ────────────────────────────────────────────────
 function buildMenu(): void {
   const template: Electron.MenuItemConstructorOptions[] = [
     { role: 'appMenu' },
@@ -213,6 +372,17 @@ function buildMenu(): void {
         { role: 'reload' },
         { role: 'forceReload' },
         { role: 'toggleDevTools' },
+        { type: 'separator' },
+        {
+          label: 'WhatsApp',
+          accelerator: 'CmdOrCtrl+1',
+          click: () => switchTab('wa'),
+        },
+        {
+          label: 'LinkedIn',
+          accelerator: 'CmdOrCtrl+2',
+          click: () => switchTab('li'),
+        },
         { type: 'separator' },
         {
           label: 'Toggle Sidebar',
@@ -226,44 +396,70 @@ function buildMenu(): void {
   Menu.setApplicationMenu(Menu.buildFromTemplate(template))
 }
 
-// ---------- IPC registration ----------
+// ─── IPC registration ────────────────────────────────────────────────
 function registerIpc(): void {
-  ipcMain.handle('sidebar:toggle', () => {
-    toggleSidebar()
-  })
+  ipcMain.handle('sidebar:toggle', () => toggleSidebar())
 
   registerAuthIpc((status) => {
     sidebarView?.webContents.send('auth:changed', status)
   })
   registerContactIpc()
 
-  // Forward active-chat changes detected by the WhatsApp preload to the sidebar.
-  // Payload is a union: { kind: 'none' } | { kind: 'person', ... } | { kind: 'group', ... }
+  // Tab bar → switch tab
+  ipcMain.on('tab:switch', (_event, next: Tab) => {
+    if (next === 'wa' || next === 'li') switchTab(next)
+  })
+
+  // WhatsApp preload → store + gate
   ipcMain.on('wa:chat:changed', (_event, payload: unknown) => {
     console.log('[main] wa:chat:changed →', payload)
-    sidebarView?.webContents.send('chat:changed', payload)
+    waContext = payload
+    if (activeTab === 'wa') {
+      sidebarView?.webContents.send('sidebar:context', { tab: 'wa', state: payload })
+    }
+  })
+
+  // LinkedIn preload → store + gate
+  ipcMain.on('li:profile:changed', (_event, payload: unknown) => {
+    console.log('[main] li:profile:changed →', payload)
+    liContext = payload
+    if (activeTab === 'li') {
+      sidebarView?.webContents.send('sidebar:context', { tab: 'li', state: payload })
+    }
   })
 
   // Navigate the WhatsApp view to a private DM with a phone number.
-  // Uses the wa.me→web.whatsapp.com/send?phone= URL which WA handles natively.
   ipcMain.handle('wa:navigate-to-dm', async (_event, phone: string) => {
     if (!whatsappView) return { ok: false, error: 'WhatsApp view not ready' }
     const normalized = phone.replace(/^\+/, '').replace(/\D/g, '')
     if (!normalized) return { ok: false, error: 'Invalid phone' }
     const url = `https://web.whatsapp.com/send?phone=${normalized}`
     try {
+      switchTab('wa')
       await whatsappView.webContents.loadURL(url)
       return { ok: true }
     } catch (err) {
-      return {
-        ok: false,
-        error: err instanceof Error ? err.message : 'Navigation failed',
-      }
+      return { ok: false, error: err instanceof Error ? err.message : 'Navigation failed' }
+    }
+  })
+
+  // Navigate the LinkedIn view to a specific URL and switch to that tab.
+  ipcMain.handle('li:navigate', async (_event, url: string) => {
+    if (!linkedinView) return { ok: false, error: 'LinkedIn view not ready' }
+    if (!url || !url.includes('linkedin.com')) {
+      return { ok: false, error: 'Not a LinkedIn URL' }
+    }
+    try {
+      switchTab('li')
+      await linkedinView.webContents.loadURL(url)
+      return { ok: true }
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : 'Navigation failed' }
     }
   })
 }
 
-// ---------- Lifecycle ----------
+// ─── Lifecycle ───────────────────────────────────────────────────────
 app.setName('Conversations')
 
 app.whenReady().then(async () => {
@@ -277,7 +473,5 @@ app.whenReady().then(async () => {
 })
 
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') {
-    app.quit()
-  }
+  if (process.platform !== 'darwin') app.quit()
 })
