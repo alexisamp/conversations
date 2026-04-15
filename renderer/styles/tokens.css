@@ -1057,21 +1057,59 @@ body {
 .li-enrich-banner {
   margin: 12px 14px 0;
   padding: 10px 12px;
-  background: #fff7ed;
-  border: 1px solid #fed7aa;
-  border-radius: 8px;
+  background: linear-gradient(135deg, #eff6ff 0%, #dbeafe 100%);
+  border: 1px solid #bfdbfe;
+  border-radius: 10px;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
 }
 .li-enrich-text {
   flex: 1;
   font-size: 11px;
-  color: #9a3412;
+  color: #1e3a8a;
   line-height: 1.35;
+  min-width: 0;
+}
+.li-enrich-label {
+  display: block;
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: #3b82f6;
+  font-weight: 600;
+  margin-bottom: 2px;
 }
 .li-enrich-text strong {
   color: var(--midnight);
   display: block;
-  margin-top: 2px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.li-enrich-muted {
+  color: #64748b;
+  font-size: 10px;
+}
+
+.enrich-button {
+  background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
+  color: white;
+  border: none;
+  padding: 7px 12px;
+  border-radius: 8px;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+  box-shadow: 0 1px 3px rgba(59, 130, 246, 0.3);
+  flex-shrink: 0;
+}
+.enrich-button:hover {
+  background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%);
+}
+.enrich-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }

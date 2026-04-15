@@ -13,6 +13,9 @@ type LinkedinProfile = {
   slug: string
   name: string | null
   jobTitle: string | null
+  location: string | null
+  about: string | null
+  photoUrl: string | null
   avatarDataUrl: string | null
 }
 
@@ -97,6 +100,102 @@ function scrapeJobTitle(): string | null {
   return null
 }
 
+function scrapeLocation(): string | null {
+  // Location sits under the headline in the top card. It's usually in a
+  // smaller gray text block with the pattern "City, Region, Country".
+  const selectors = [
+    '.pv-text-details__left-panel .text-body-small:not(.inline)',
+    '.ph5 .text-body-small.inline.t-black--light.break-words',
+    '.pv-text-details__left-panel span.text-body-small',
+    '.pv-top-card .text-body-small.inline',
+  ]
+  for (const sel of selectors) {
+    const el = document.querySelector(sel) as HTMLElement | null
+    if (!el) continue
+    const text = el.innerText?.trim()
+    if (!text || text.length < 3 || text.length > 150) continue
+    // A location usually contains a comma and no pipe/bullet
+    if (!text.includes(',')) continue
+    if (text.includes('|') || text.includes('·')) continue
+    return text
+  }
+  // Structural fallback: small-text block near h1 that has a comma and ends
+  // near a "Contact info" link.
+  const contactInfo = Array.from(document.querySelectorAll('a, button')).find(
+    (el) => ((el as HTMLElement).innerText?.trim().toLowerCase() ?? '') === 'contact info',
+  )
+  if (contactInfo) {
+    const container = contactInfo.parentElement
+    if (container) {
+      const siblings = container.querySelectorAll<HTMLElement>('span')
+      for (const s of Array.from(siblings)) {
+        const text = s.innerText?.trim() ?? ''
+        if (text.length > 5 && text.length < 150 && text.includes(',')) return text
+      }
+    }
+  }
+  return null
+}
+
+function scrapeAbout(): string | null {
+  // Find the "About" section by walking from its heading.
+  const headings = Array.from(
+    document.querySelectorAll<HTMLElement>('section h2, section div[id="about"]'),
+  )
+  for (const heading of headings) {
+    const text = heading.innerText?.trim().toLowerCase() ?? ''
+    if (text !== 'about' && text !== 'acerca de') continue
+    const section = heading.closest('section')
+    if (!section) continue
+    // The content is usually in a descendant with "inline-show-more-text"
+    // class or similar; fall back to the section's visible text minus the
+    // heading itself.
+    const contentEl =
+      section.querySelector<HTMLElement>('.inline-show-more-text') ??
+      section.querySelector<HTMLElement>('[class*="inline-show-more"]') ??
+      section.querySelector<HTMLElement>('div.display-flex > span[aria-hidden="true"]')
+    if (contentEl) {
+      const aboutText = contentEl.innerText?.trim()
+      if (aboutText && aboutText.length > 10 && aboutText.length < 5000) return aboutText
+    }
+  }
+  // Fallback: look for a section whose first h2 is "About".
+  const aboutSection = Array.from(document.querySelectorAll('section')).find((s) => {
+    const h = s.querySelector('h2')
+    const t = (h as HTMLElement | null)?.innerText?.trim().toLowerCase() ?? ''
+    return t === 'about' || t === 'acerca de'
+  })
+  if (aboutSection) {
+    const text = (aboutSection as HTMLElement).innerText?.trim() ?? ''
+    // Strip the leading "About\n" heading if present
+    const withoutHeading = text.replace(/^about\s*/i, '').trim()
+    if (withoutHeading.length > 10 && withoutHeading.length < 5000) return withoutHeading
+  }
+  return null
+}
+
+function scrapePhotoUrl(): string | null {
+  // LinkedIn serves profile photos from media.licdn.com via a <img>. These
+  // URLs are publicly accessible for some time — good enough to persist in
+  // outreach_logs.profile_photo_url (we'll upload to Supabase storage in a
+  // later phase so we own the bits).
+  const candidates = [
+    'img.pv-top-card-profile-picture__image',
+    'img.profile-photo-edit__preview',
+    'main img[alt*="profile photo"]',
+    'main section img[class*="profile-picture"]',
+  ]
+  for (const sel of candidates) {
+    const el = document.querySelector(sel) as HTMLImageElement | null
+    if (!el || !el.src) continue
+    if (el.src.startsWith('data:') || el.src.startsWith('blob:')) continue
+    if (el.src.includes('media.licdn.com') || el.src.includes('licdn.com')) {
+      return el.src
+    }
+  }
+  return null
+}
+
 function scrapeAvatar(): string | null {
   // Top card profile photo. Selectors vary; try a few.
   const candidates = [
@@ -146,16 +245,27 @@ function tick(): void {
   const emit = (source: string) => {
     const name = scrapeName()
     const jobTitle = scrapeJobTitle()
+    const location = scrapeLocation()
+    const about = scrapeAbout()
+    const photoUrl = scrapePhotoUrl()
     const avatarDataUrl = scrapeAvatar()
     const profile: LinkedinProfile = {
       url: parsed.url,
       slug: parsed.slug,
       name,
       jobTitle,
+      location,
+      about,
+      photoUrl,
       avatarDataUrl,
     }
     console.log(
-      `[li-preload] profile(${source}) → ${profile.url} name=${name ?? 'null'} title=${jobTitle ?? 'null'}`,
+      `[li-preload] profile(${source}) → ${profile.url}`,
+      `name=${name ?? 'null'}`,
+      `title=${jobTitle ?? 'null'}`,
+      `loc=${location ? 'yes' : 'null'}`,
+      `about=${about ? `${about.length}chars` : 'null'}`,
+      `photo=${photoUrl ? 'yes' : 'null'}`,
     )
     ipcRenderer.send('li:profile:changed', { kind: 'profile', ...profile })
   }

@@ -889,10 +889,35 @@ async function attachPhoneToExistingContact(input: {
  * uses the data scraped client-side by preload-linkedin, which runs inside
  * the user's authenticated LinkedIn session and has full DOM access.
  */
+type LinkedinScrapeInput = {
+  name: string | null
+  jobTitle: string | null
+  location: string | null
+  about: string | null
+  photoUrl: string | null
+}
+
+/** Extract company from a headline like "Title at Company" or "Title / Company". */
+function parseCompanyFromHeadline(headline: string | null): string | null {
+  if (!headline) return null
+  const atMatch = headline.match(/ at (.+)$/i)
+  if (atMatch?.[1]) return atMatch[1].trim()
+  // Headlines like "Head of Marketing / Growth / Nubox" — last slash segment
+  const parts = headline.split(/\s*[|/·]\s*/)
+  if (parts.length > 1) {
+    const last = parts[parts.length - 1].trim()
+    if (last.length >= 2 && last.length < 80) return last
+  }
+  return null
+}
+
 async function createContactFromLinkedinProfile(input: {
   url: string
   name: string
   jobTitle: string | null
+  location: string | null
+  about: string | null
+  photoUrl: string | null
 }): Promise<CreateContactResult> {
   const supabase = getSupabase()
   const {
@@ -901,6 +926,8 @@ async function createContactFromLinkedinProfile(input: {
   if (!session) return { ok: false, error: 'Not signed in' }
   const userId = session.user.id
 
+  const company = parseCompanyFromHeadline(input.jobTitle)
+
   const { data: inserted, error: insertErr } = await supabase
     .from('outreach_logs')
     .insert({
@@ -908,6 +935,10 @@ async function createContactFromLinkedinProfile(input: {
       name: input.name.trim(),
       linkedin_url: input.url,
       job_title: input.jobTitle,
+      company,
+      location: input.location,
+      personal_context: input.about,
+      profile_photo_url: input.photoUrl,
       status: 'PROSPECT',
     })
     .select('id')
@@ -920,7 +951,6 @@ async function createContactFromLinkedinProfile(input: {
 
   const contactId = inserted.id as string
 
-  // Also write the unified channel row so future lookups hit contact_channels
   await supabase.from('contact_channels').insert({
     outreach_log_id: contactId,
     channel: 'linkedin',
@@ -929,34 +959,56 @@ async function createContactFromLinkedinProfile(input: {
     verified: true,
   })
 
-  console.log('[contacts] created from LI profile →', contactId, input.name)
-  return { ok: true, contactId, enriched: !!input.jobTitle }
+  console.log(
+    '[contacts] created from LI profile →',
+    contactId,
+    input.name,
+    'fields:',
+    Object.entries({
+      job_title: input.jobTitle,
+      company,
+      location: input.location,
+      personal_context: input.about,
+      profile_photo_url: input.photoUrl,
+    })
+      .filter(([, v]) => !!v)
+      .map(([k]) => k),
+  )
+  return { ok: true, contactId, enriched: true }
 }
 
 /**
- * Enrich an existing contact with fields scraped from a LinkedIn profile.
- * Only fills gaps — we never overwrite fields the user already set.
+ * Enrich an existing contact from a LinkedIn profile currently being viewed.
+ * Only fills empty fields — never overwrites values the user already set.
+ * Derives the `company` field from the headline when possible.
  */
-async function enrichContactFromLinkedinProfile(input: {
-  contact_id: string
-  name: string | null
-  jobTitle: string | null
-}): Promise<WriteResult> {
+async function enrichContactFromLinkedinProfile(
+  input: { contact_id: string } & LinkedinScrapeInput,
+): Promise<WriteResult> {
   const supabase = getSupabase()
-  // Fetch the current row so we can decide which fields are empty.
   const { data: current, error: fetchErr } = await supabase
     .from('outreach_logs')
-    .select('name, job_title')
+    .select('name, job_title, company, location, personal_context, profile_photo_url')
     .eq('id', input.contact_id)
     .maybeSingle()
   if (fetchErr || !current) {
     return { ok: false, error: fetchErr?.message ?? 'contact not found' }
   }
 
+  const company = parseCompanyFromHeadline(input.jobTitle)
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const c = current as any
   const updates: Record<string, unknown> = {}
-  if (!current.name && input.name) updates.name = input.name
-  if (!current.job_title && input.jobTitle) updates.job_title = input.jobTitle
+  if (!c.name && input.name) updates.name = input.name
+  if (!c.job_title && input.jobTitle) updates.job_title = input.jobTitle
+  if (!c.company && company) updates.company = company
+  if (!c.location && input.location) updates.location = input.location
+  if (!c.personal_context && input.about) updates.personal_context = input.about
+  if (!c.profile_photo_url && input.photoUrl) updates.profile_photo_url = input.photoUrl
+
   if (Object.keys(updates).length === 0) {
+    console.log('[contacts] enrich: nothing to fill for', input.contact_id)
     return { ok: true }
   }
 
@@ -964,8 +1016,15 @@ async function enrichContactFromLinkedinProfile(input: {
     .from('outreach_logs')
     .update(updates)
     .eq('id', input.contact_id)
-  if (updErr) return { ok: false, error: updErr.message }
-  console.log('[contacts] enriched contact from LI profile →', input.contact_id, Object.keys(updates))
+  if (updErr) {
+    console.error('[contacts] enrich update failed:', updErr)
+    return { ok: false, error: updErr.message }
+  }
+  console.log(
+    '[contacts] enriched contact from LI profile →',
+    input.contact_id,
+    Object.keys(updates),
+  )
   return { ok: true }
 }
 
@@ -1034,14 +1093,30 @@ export function registerContactIpc(): void {
   )
   ipcMain.handle(
     'contact:createFromLinkedinProfile',
-    (_event, input: { url: string; name: string; jobTitle: string | null }) =>
-      createContactFromLinkedinProfile(input),
+    (
+      _event,
+      input: {
+        url: string
+        name: string
+        jobTitle: string | null
+        location: string | null
+        about: string | null
+        photoUrl: string | null
+      },
+    ) => createContactFromLinkedinProfile(input),
   )
   ipcMain.handle(
     'contact:enrichFromLinkedinProfile',
     (
       _event,
-      input: { contact_id: string; name: string | null; jobTitle: string | null },
+      input: {
+        contact_id: string
+        name: string | null
+        jobTitle: string | null
+        location: string | null
+        about: string | null
+        photoUrl: string | null
+      },
     ) => enrichContactFromLinkedinProfile(input),
   )
 }

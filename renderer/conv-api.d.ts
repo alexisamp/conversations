@@ -139,8 +139,29 @@ export type LiState =
       slug: string
       name: string | null
       jobTitle: string | null
+      location: string | null
+      about: string | null
+      photoUrl: string | null
       avatarDataUrl: string | null
     }
+
+export type EnrichFromLiInput = {
+  contact_id: string
+  name: string | null
+  jobTitle: string | null
+  location: string | null
+  about: string | null
+  photoUrl: string | null
+}
+
+export type CreateFromLiInput = {
+  url: string
+  name: string
+  jobTitle: string | null
+  location: string | null
+  about: string | null
+  photoUrl: string | null
+}
 
 export type SidebarContext =
   | { tab: 'wa'; state: WaState }
@@ -165,16 +186,8 @@ export type ConvApi = {
     createFromParticipant(input: CreateContactInput): Promise<CreateContactResult>
     attachPhone(input: AttachPhoneInput): Promise<WriteResult>
     attachLid(input: AttachLidInput): Promise<WriteResult>
-    createFromLinkedinProfile(input: {
-      url: string
-      name: string
-      jobTitle: string | null
-    }): Promise<CreateContactResult>
-    enrichFromLinkedinProfile(input: {
-      contact_id: string
-      name: string | null
-      jobTitle: string | null
-    }): Promise<WriteResult>
+    createFromLinkedinProfile(input: CreateFromLiInput): Promise<CreateContactResult>
+    enrichFromLinkedinProfile(input: EnrichFromLiInput): Promise<WriteResult>
   }
   sidebar: {
     onContext(cb: (ctx: SidebarContext) => void): void

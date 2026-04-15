@@ -138,8 +138,29 @@ export type LiState =
       slug: string
       name: string | null
       jobTitle: string | null
+      location: string | null
+      about: string | null
+      photoUrl: string | null
       avatarDataUrl: string | null
     }
+
+export type EnrichFromLiInput = {
+  contact_id: string
+  name: string | null
+  jobTitle: string | null
+  location: string | null
+  about: string | null
+  photoUrl: string | null
+}
+
+export type CreateFromLiInput = {
+  url: string
+  name: string
+  jobTitle: string | null
+  location: string | null
+  about: string | null
+  photoUrl: string | null
+}
 
 export type SidebarContext =
   | { tab: 'wa'; state: WaState }
@@ -175,17 +196,9 @@ const api = {
       ipcRenderer.invoke('contact:attachPhone', input),
     attachLid: (input: AttachLidInput): Promise<WriteResult> =>
       ipcRenderer.invoke('contact:attachLid', input),
-    createFromLinkedinProfile: (input: {
-      url: string
-      name: string
-      jobTitle: string | null
-    }): Promise<CreateContactResult> =>
+    createFromLinkedinProfile: (input: CreateFromLiInput): Promise<CreateContactResult> =>
       ipcRenderer.invoke('contact:createFromLinkedinProfile', input),
-    enrichFromLinkedinProfile: (input: {
-      contact_id: string
-      name: string | null
-      jobTitle: string | null
-    }): Promise<WriteResult> =>
+    enrichFromLinkedinProfile: (input: EnrichFromLiInput): Promise<WriteResult> =>
       ipcRenderer.invoke('contact:enrichFromLinkedinProfile', input),
   },
   sidebar: {

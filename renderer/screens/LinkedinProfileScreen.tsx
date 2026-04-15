@@ -57,6 +57,9 @@ export function LinkedinProfileScreen({ state }: Props) {
       url: state.url,
       name: state.name,
       jobTitle: state.jobTitle,
+      location: state.location,
+      about: state.about,
+      photoUrl: state.photoUrl,
     })
     setCreating(false)
     if (result.ok) {
@@ -72,6 +75,9 @@ export function LinkedinProfileScreen({ state }: Props) {
       contact_id: contact.id,
       name: state.name,
       jobTitle: state.jobTitle,
+      location: state.location,
+      about: state.about,
+      photoUrl: state.photoUrl,
     })
     setEnriching(false)
     await refetch()
@@ -84,33 +90,48 @@ export function LinkedinProfileScreen({ state }: Props) {
     return <div className="error">{lookup.message}</div>
   }
   if (lookup.kind === 'found') {
-    // Show the enrich banner whenever the LinkedIn page has scraped data
-    // that we could use (name or job title). The backend only fills
-    // empty fields, so clicking on a fully-populated contact is a no-op.
-    const hasScrapedData = !!state.name || !!state.jobTitle
-    const hasGaps =
-      (!lookup.contact.job_title && !!state.jobTitle) ||
-      (!lookup.contact.name && !!state.name)
-    const showEnrich = hasScrapedData && hasGaps
+    // Compute which fields the scrape could fill (for the banner hint).
+    const contact = lookup.contact
+    const fillableFields: string[] = []
+    if (!contact.job_title && state.jobTitle) fillableFields.push('job title')
+    if (!contact.company && state.jobTitle?.match(/[|/·]| at /i))
+      fillableFields.push('company')
+    if (!contact.personal_context && state.about) fillableFields.push('about')
+    if (!contact.profile_photo_url && state.photoUrl) fillableFields.push('photo')
+    // Location and name we also fill, but only show them in the hint if relevant
+    if (!contact.name && state.name) fillableFields.push('name')
+
+    // The button is ALWAYS shown when we're looking at a profile with any
+    // scraped data, so the user can force-refresh enrichment at any time.
+    const hasAnyScrape = !!state.name || !!state.jobTitle || !!state.about
     return (
       <div className="li-found">
-        {showEnrich && (
+        {hasAnyScrape && (
           <div className="li-enrich-banner">
             <div className="li-enrich-text">
-              <span>Scraped from this profile:</span>
-              {state.jobTitle && <strong>{state.jobTitle}</strong>}
-              {!state.jobTitle && state.name && <strong>{state.name}</strong>}
+              {fillableFields.length > 0 ? (
+                <>
+                  <span className="li-enrich-label">Can fill</span>
+                  <strong>{fillableFields.join(' · ')}</strong>
+                </>
+              ) : (
+                <>
+                  <span className="li-enrich-label">Fully enriched</span>
+                  <span className="li-enrich-muted">click to re-scrape</span>
+                </>
+              )}
             </div>
             <button
-              className="tiny-action primary"
+              className="enrich-button"
               disabled={enriching}
-              onClick={() => handleEnrich(lookup.contact)}
+              onClick={() => handleEnrich(contact)}
+              title="Enrich from this LinkedIn profile"
             >
-              {enriching ? 'Enriching…' : 'Fill'}
+              {enriching ? '…' : '✨ Enrich'}
             </button>
           </div>
         )}
-        <ContactDetailScreen contact={lookup.contact} onRefresh={refetch} />
+        <ContactDetailScreen contact={contact} onRefresh={refetch} />
       </div>
     )
   }
