@@ -175,94 +175,44 @@ function scrapeAbout(): string | null {
 }
 
 function scrapePhotoUrl(): string | null {
-  // LinkedIn serves profile photos from media.licdn.com. The profile photo
-  // and the cover banner are both <img> in the same top-card container,
-  // which fooled every class/size/position heuristic I tried. The ONE
-  // reliable distinction is the URL path fragment LinkedIn bakes into its
-  // CDN names:
+  // Ported directly from reThink-2026/extension/src/content-scripts/linkedin-profile.ts
+  // which is known to work across WhatsApp^W LinkedIn releases.
   //
-  //   profile photos → .../profile-displayphoto-shrink_...
-  //   cover banners  → .../profile-displaybackgroundimage-shrink_...
-  //   company logos  → .../company-logo_...
-  //   image feed     → .../image-shrink_...  (posts, not people)
+  // Two critical details:
+  //   1. Only scan <main>. The logged-in user's own avatar lives in the nav
+  //      header OUTSIDE main, so restricting the search automatically avoids
+  //      picking up "your own face" when viewing someone else's profile.
+  //   2. Accept src OR data-delayed-url OR data-ghost-url. LinkedIn uses
+  //      those attributes for lazy-loaded + ghost-rendered images on its
+  //      SPA route transitions.
   //
-  // So the rule is: accept any licdn URL that contains
-  // "profile-displayphoto" and reject every other category.
-
-  function hasBadPath(url: string): boolean {
-    const u = url.toLowerCase()
-    return (
-      u.includes('displaybackgroundimage') ||
-      u.includes('profile-background') ||
-      u.includes('company-logo') ||
-      u.includes('company-background')
-    )
-  }
-
-  function isProfilePhotoUrl(url: string): boolean {
-    const u = url.toLowerCase()
-    if (hasBadPath(u)) return false
-    if (u.includes('profile-displayphoto')) return true
-    // Some newer LI builds use just "displayphoto" without "profile-" prefix.
-    if (u.includes('displayphoto') && !u.includes('displaybackground')) return true
-    return false
-  }
-
-  function readSrc(img: HTMLImageElement): string | null {
-    const candidates = [
-      img.currentSrc,
-      img.src,
-      img.getAttribute('src'),
-      img.getAttribute('data-delayed-url'),
-      img.getAttribute('data-src'),
-    ]
-    for (const c of candidates) {
-      if (!c) continue
-      if (c.startsWith('data:') || c.startsWith('blob:')) continue
-      if (!c.includes('licdn.com')) continue
-      return c
-    }
+  // The distinguishing URL fragment is "profile-displayphoto" (the profile
+  // photo) vs "profile-displaybackgroundimage" (the cover banner). We
+  // strongly prefer the former, fall back to any licdn dms/image inside main.
+  function readUrl(img: HTMLImageElement): string | null {
+    const url =
+      img.src ||
+      img.getAttribute('data-delayed-url') ||
+      img.getAttribute('data-ghost-url') ||
+      ''
+    if (url && url.includes('media.licdn.com')) return url
     return null
   }
 
-  // Strategy 1 (strict): look at every licdn <img> anywhere on the page and
-  // accept the FIRST one whose src path marks it as a profile photo.
-  const allImgs = Array.from(
-    document.querySelectorAll<HTMLImageElement>('img'),
-  )
-  for (const img of allImgs) {
-    const src = readSrc(img)
-    if (!src) continue
-    if (isProfilePhotoUrl(src)) return src
+  const mainEl = document.querySelector('main')
+  if (!mainEl) return null
+  const imgs = Array.from(mainEl.querySelectorAll<HTMLImageElement>('img'))
+
+  // Step 1: preferred — the contact's profile photo
+  for (const img of imgs) {
+    const url = readUrl(img)
+    if (url && url.indexOf('profile-displayphoto') !== -1) return url
   }
 
-  // Strategy 2 (loose): same list, but also accept any licdn image that
-  // (a) is NOT in the bad-path deny list, (b) has a square-ish aspect
-  // ratio once loaded, and (c) has an alt that isn't a banner/cover label.
-  // This fires as a backup if LinkedIn changes the URL format in a future
-  // release.
-  for (const img of allImgs) {
-    const src = readSrc(img)
-    if (!src) continue
-    if (hasBadPath(src)) continue
-
-    const w = img.naturalWidth || img.width
-    const h = img.naturalHeight || img.height
-    if (!w || !h) continue // not loaded yet — let a retry pick it up
-    const ratio = w / h
-    if (ratio < 0.66 || ratio > 1.5) continue
-    if (w < 80 && h < 80) continue
-
-    const alt = (img.getAttribute('alt') ?? '').toLowerCase()
-    if (
-      alt.includes('background') ||
-      alt.includes('cover') ||
-      alt.includes('banner') ||
-      alt.includes('company logo')
-    ) {
-      continue
-    }
-    return src
+  // Step 2: fallback to any media.licdn.com/dms/image inside main
+  for (const img of imgs) {
+    const url = readUrl(img)
+    if (url && url.indexOf('media.licdn.com/dms/image') !== -1) return url
   }
 
   return null
