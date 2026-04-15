@@ -49,10 +49,52 @@ function scrapeName(): string | null {
 }
 
 function scrapeJobTitle(): string | null {
-  const el = document.querySelector('.text-body-medium.break-words') as HTMLElement | null
-  const text = el?.innerText?.trim() ?? null
-  if (!text || text.length > 200) return null
-  return text
+  // LinkedIn's class names are obfuscated and shift frequently. Try a stack
+  // of selectors in descending order of reliability, then fall back to a
+  // structural walk from the h1.
+  const selectors = [
+    '[data-generated-suggestion-target]',
+    '.pv-text-details__right-panel .text-body-medium',
+    '.pv-top-card-v2-ctas + .text-body-medium',
+    '.ph5 .text-body-medium.break-words',
+    'main section .text-body-medium.break-words',
+    '.text-body-medium.break-words',
+    'main .pv-top-card .text-body-medium',
+    'main .text-body-medium',
+  ]
+  for (const sel of selectors) {
+    const el = document.querySelector(sel) as HTMLElement | null
+    if (!el) continue
+    const text = el.innerText?.trim()
+    if (!text || text.length < 2 || text.length > 200) continue
+    // Skip obvious false positives (multi-line, weird patterns)
+    if (text.includes('\n')) continue
+    return text
+  }
+
+  // Structural fallback: walk up from the h1 that holds the name and look
+  // for the first text element right below it that isn't the name itself
+  // and isn't a nested button/link container.
+  const h1 = document.querySelector('main h1') as HTMLElement | null
+  if (h1) {
+    const name = h1.innerText?.trim() ?? ''
+    let container: HTMLElement | null = h1.parentElement
+    for (let depth = 0; depth < 4 && container; depth++) {
+      const candidates = container.querySelectorAll<HTMLElement>('div, span, p')
+      for (const el of Array.from(candidates)) {
+        const text = el.innerText?.trim() ?? ''
+        if (!text || text === name) continue
+        if (text.length < 5 || text.length > 200) continue
+        if (text.includes('\n')) continue
+        if (el.querySelector('button, a, h1')) continue
+        if (el.children.length > 2) continue
+        return text
+      }
+      container = container.parentElement
+    }
+  }
+
+  return null
 }
 
 function scrapeAvatar(): string | null {

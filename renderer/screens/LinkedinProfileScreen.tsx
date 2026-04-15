@@ -84,23 +84,29 @@ export function LinkedinProfileScreen({ state }: Props) {
     return <div className="error">{lookup.message}</div>
   }
   if (lookup.kind === 'found') {
-    // Highlight missing fields that the scraped profile could fill.
-    const missingJobTitle = !lookup.contact.job_title && !!state.jobTitle
-    const canEnrich = missingJobTitle
+    // Show the enrich banner whenever the LinkedIn page has scraped data
+    // that we could use (name or job title). The backend only fills
+    // empty fields, so clicking on a fully-populated contact is a no-op.
+    const hasScrapedData = !!state.name || !!state.jobTitle
+    const hasGaps =
+      (!lookup.contact.job_title && !!state.jobTitle) ||
+      (!lookup.contact.name && !!state.name)
+    const showEnrich = hasScrapedData && hasGaps
     return (
       <div className="li-found">
-        {canEnrich && (
+        {showEnrich && (
           <div className="li-enrich-banner">
             <div className="li-enrich-text">
-              Scraped from this profile:{' '}
+              <span>Scraped from this profile:</span>
               {state.jobTitle && <strong>{state.jobTitle}</strong>}
+              {!state.jobTitle && state.name && <strong>{state.name}</strong>}
             </div>
             <button
               className="tiny-action primary"
               disabled={enriching}
               onClick={() => handleEnrich(lookup.contact)}
             >
-              {enriching ? 'Enriching…' : 'Fill missing fields'}
+              {enriching ? 'Enriching…' : 'Fill'}
             </button>
           </div>
         )}
