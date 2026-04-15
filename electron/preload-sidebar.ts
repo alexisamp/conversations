@@ -175,6 +175,18 @@ const api = {
       ipcRenderer.invoke('contact:attachPhone', input),
     attachLid: (input: AttachLidInput): Promise<WriteResult> =>
       ipcRenderer.invoke('contact:attachLid', input),
+    createFromLinkedinProfile: (input: {
+      url: string
+      name: string
+      jobTitle: string | null
+    }): Promise<CreateContactResult> =>
+      ipcRenderer.invoke('contact:createFromLinkedinProfile', input),
+    enrichFromLinkedinProfile: (input: {
+      contact_id: string
+      name: string | null
+      jobTitle: string | null
+    }): Promise<WriteResult> =>
+      ipcRenderer.invoke('contact:enrichFromLinkedinProfile', input),
   },
   sidebar: {
     onContext: (cb: (ctx: SidebarContext) => void): void => {

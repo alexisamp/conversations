@@ -1032,3 +1032,46 @@ body {
   color: var(--shuttle);
   margin-top: 2px;
 }
+.li-empty-actions {
+  padding: 0 14px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.li-empty-actions .primary {
+  background: var(--burnham);
+  color: white;
+  border: none;
+  padding: 10px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.li-empty-actions .primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Enrich banner when viewing a known contact via their LI profile */
+.li-enrich-banner {
+  margin: 12px 14px 0;
+  padding: 10px 12px;
+  background: #fff7ed;
+  border: 1px solid #fed7aa;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.li-enrich-text {
+  flex: 1;
+  font-size: 11px;
+  color: #9a3412;
+  line-height: 1.35;
+}
+.li-enrich-text strong {
+  color: var(--midnight);
+  display: block;
+  margin-top: 2px;
+}

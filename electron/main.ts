@@ -44,14 +44,152 @@ let tabBarView: WebContentsView | null = null
 let whatsappView: WebContentsView | null = null
 let linkedinView: WebContentsView | null = null
 let sidebarView: WebContentsView | null = null
+let searchOverlayView: WebContentsView | null = null
 let sidebarVisible = true
 let activeTab: Tab = 'wa'
+let overlayVisible = false
 
 // Cached context per tab so we can re-emit on tab switch.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let waContext: any = { kind: 'none' }
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let liContext: any = { kind: 'none' }
+
+// ─── Search overlay HTML ─────────────────────────────────────────────
+// A centered command-palette style modal that lives in its own
+// WebContentsView stacked on top of everything else. Cmd+K shows it;
+// Esc or click outside the box hides it. Enter submits to LinkedIn's
+// search results page in the LI tab.
+const SEARCH_OVERLAY_HTML = `<!doctype html>
+<html lang="en"><head><meta charset="utf-8" /><style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    height: 100%;
+    font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
+    background: rgba(10, 10, 10, 0.45);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    -webkit-user-select: none;
+    user-select: none;
+  }
+  .box {
+    background: white;
+    border-radius: 14px;
+    padding: 16px 18px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    width: 520px;
+    box-shadow: 0 24px 80px rgba(0, 0, 0, 0.35);
+  }
+  .logo {
+    width: 36px;
+    height: 36px;
+    border-radius: 6px;
+    background: #0A66C2;
+    color: white;
+    font-weight: 900;
+    font-size: 19px;
+    font-style: italic;
+    font-family: Georgia, serif;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    letter-spacing: -0.5px;
+  }
+  .input-wrap {
+    flex: 1;
+    position: relative;
+  }
+  .input-wrap::before {
+    content: '';
+    position: absolute;
+    left: 16px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 16px;
+    height: 16px;
+    background: no-repeat center/contain url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23536471' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'><circle cx='11' cy='11' r='8'/><path d='m21 21-4.3-4.3'/></svg>");
+  }
+  input {
+    width: 100%;
+    border: 1px solid #d8d8d8;
+    border-radius: 999px;
+    padding: 11px 18px 11px 42px;
+    font-size: 15px;
+    color: #0a0a0a;
+    background: white;
+    outline: none;
+    font-family: inherit;
+    -webkit-user-select: text;
+    user-select: text;
+  }
+  input:focus {
+    border-color: #0A66C2;
+    box-shadow: 0 0 0 3px rgba(10, 102, 194, 0.12);
+  }
+  .hint {
+    position: absolute;
+    bottom: -46px;
+    left: 0;
+    right: 0;
+    text-align: center;
+    font-size: 11px;
+    color: rgba(255, 255, 255, 0.75);
+    letter-spacing: 0.4px;
+  }
+  .hint kbd {
+    display: inline-block;
+    padding: 2px 5px;
+    background: rgba(255, 255, 255, 0.18);
+    border-radius: 4px;
+    font-family: -apple-system, sans-serif;
+    font-size: 10px;
+    color: white;
+    margin: 0 2px;
+  }
+</style></head><body>
+  <div class="box" id="box">
+    <div class="logo">in</div>
+    <div class="input-wrap">
+      <input id="q" type="text" placeholder="I'm looking for…" autocomplete="off" spellcheck="false" />
+      <div class="hint"><kbd>Enter</kbd> to search LinkedIn   &middot;   <kbd>Esc</kbd> to close</div>
+    </div>
+  </div>
+  <script>
+    const input = document.getElementById('q');
+    const box = document.getElementById('box');
+
+    function focusInput() {
+      input.focus();
+      input.select();
+    }
+    window.overlay.onShow(() => {
+      input.value = '';
+      focusInput();
+    });
+    // Focus immediately on load in case the first show event is missed.
+    focusInput();
+    window.addEventListener('focus', focusInput);
+
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        window.overlay.hide();
+      } else if (e.key === 'Enter') {
+        const q = input.value.trim();
+        if (q) window.overlay.submit(q);
+      }
+    });
+
+    document.body.addEventListener('click', (e) => {
+      if (!e.target.closest('#box')) {
+        window.overlay.hide();
+      }
+    });
+  </script>
+</body></html>`
 
 // ─── Tab bar HTML ────────────────────────────────────────────────────
 const TAB_BAR_HTML = `<!doctype html>
@@ -292,10 +430,29 @@ async function createMainWindow(): Promise<void> {
   })
 
   // ── Add to window (order matters: later = on top in z-order) ──
+  // ── Search overlay view (topmost, hidden by default) ──
+  searchOverlayView = new WebContentsView({
+    webPreferences: {
+      preload: path.join(__dirname, 'preload-overlay.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false,
+      transparent: true,
+    },
+  })
+  searchOverlayView.setBackgroundColor('#00000000')
+  await searchOverlayView.webContents.loadURL(
+    'data:text/html;charset=utf-8,' + encodeURIComponent(SEARCH_OVERLAY_HTML),
+  )
+  searchOverlayView.setVisible(false)
+  searchOverlayView.setBounds({ x: 0, y: 0, width: 0, height: 0 })
+
+  // Z-order: first added = back. Tab bar + overlay are topmost.
   mainWindow.contentView.addChildView(whatsappView)
   mainWindow.contentView.addChildView(linkedinView)
   mainWindow.contentView.addChildView(sidebarView)
   mainWindow.contentView.addChildView(tabBarView)
+  mainWindow.contentView.addChildView(searchOverlayView)
 
   refreshLayout()
   mainWindow.on('resize', refreshLayout)
@@ -323,7 +480,36 @@ async function createMainWindow(): Promise<void> {
     whatsappView = null
     linkedinView = null
     sidebarView = null
+    searchOverlayView = null
   })
+}
+
+// ─── Search overlay show/hide ────────────────────────────────────────
+function showSearchOverlay(): void {
+  if (!mainWindow || !searchOverlayView) return
+  const { width, height } = mainWindow.getContentBounds()
+  searchOverlayView.setBounds({
+    x: 0,
+    y: 0,
+    width,
+    height,
+  })
+  searchOverlayView.setVisible(true)
+  searchOverlayView.webContents.focus()
+  searchOverlayView.webContents.send('overlay:shown')
+  overlayVisible = true
+}
+
+function hideSearchOverlay(): void {
+  if (!searchOverlayView) return
+  searchOverlayView.setVisible(false)
+  searchOverlayView.setBounds({ x: 0, y: 0, width: 0, height: 0 })
+  overlayVisible = false
+}
+
+function toggleSearchOverlay(): void {
+  if (overlayVisible) hideSearchOverlay()
+  else showSearchOverlay()
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────
@@ -344,6 +530,11 @@ function refreshLayout(): void {
     sidebarView,
     sidebarVisible,
   })
+  // Keep the overlay sized to the whole window when visible.
+  if (overlayVisible && searchOverlayView) {
+    const { width, height } = mainWindow.getContentBounds()
+    searchOverlayView.setBounds({ x: 0, y: 0, width, height })
+  }
 }
 
 function switchTab(next: Tab): void {
@@ -480,6 +671,11 @@ function buildMenu(): void {
         },
         { type: 'separator' },
         {
+          label: 'Search LinkedIn',
+          accelerator: 'CmdOrCtrl+K',
+          click: () => toggleSearchOverlay(),
+        },
+        {
           label: 'Toggle Sidebar',
           accelerator: 'CmdOrCtrl+Shift+S',
           click: () => toggleSidebar(),
@@ -572,6 +768,17 @@ function registerIpc(): void {
     } catch (err) {
       return { ok: false, error: err instanceof Error ? err.message : 'Navigation failed' }
     }
+  })
+
+  // Search overlay
+  ipcMain.on('overlay:hide', () => hideSearchOverlay())
+  ipcMain.on('overlay:submit', (_event, query: string) => {
+    if (typeof query !== 'string' || !query.trim()) return
+    const q = query.trim()
+    const url = `https://www.linkedin.com/search/results/people/?keywords=${encodeURIComponent(q)}`
+    hideSearchOverlay()
+    switchTab('li')
+    linkedinView?.webContents.loadURL(url).catch(() => {})
   })
 }
 

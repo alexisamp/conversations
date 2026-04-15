@@ -882,6 +882,93 @@ async function attachPhoneToExistingContact(input: {
   return { ok: true }
 }
 
+/**
+ * Create a new contact from a LinkedIn profile that the user is currently
+ * viewing in the LI tab. Unlike the group-modal create flow (which relies on
+ * the server-side linkedin-fetch edge function that LinkedIn blocks), this
+ * uses the data scraped client-side by preload-linkedin, which runs inside
+ * the user's authenticated LinkedIn session and has full DOM access.
+ */
+async function createContactFromLinkedinProfile(input: {
+  url: string
+  name: string
+  jobTitle: string | null
+}): Promise<CreateContactResult> {
+  const supabase = getSupabase()
+  const {
+    data: { session },
+  } = await supabase.auth.getSession()
+  if (!session) return { ok: false, error: 'Not signed in' }
+  const userId = session.user.id
+
+  const { data: inserted, error: insertErr } = await supabase
+    .from('outreach_logs')
+    .insert({
+      user_id: userId,
+      name: input.name.trim(),
+      linkedin_url: input.url,
+      job_title: input.jobTitle,
+      status: 'PROSPECT',
+    })
+    .select('id')
+    .single()
+
+  if (insertErr || !inserted) {
+    console.error('[contacts] createContactFromLinkedinProfile insert failed:', insertErr)
+    return { ok: false, error: insertErr?.message ?? 'insert failed' }
+  }
+
+  const contactId = inserted.id as string
+
+  // Also write the unified channel row so future lookups hit contact_channels
+  await supabase.from('contact_channels').insert({
+    outreach_log_id: contactId,
+    channel: 'linkedin',
+    channel_identifier: input.url,
+    channel_name: input.name,
+    verified: true,
+  })
+
+  console.log('[contacts] created from LI profile →', contactId, input.name)
+  return { ok: true, contactId, enriched: !!input.jobTitle }
+}
+
+/**
+ * Enrich an existing contact with fields scraped from a LinkedIn profile.
+ * Only fills gaps — we never overwrite fields the user already set.
+ */
+async function enrichContactFromLinkedinProfile(input: {
+  contact_id: string
+  name: string | null
+  jobTitle: string | null
+}): Promise<WriteResult> {
+  const supabase = getSupabase()
+  // Fetch the current row so we can decide which fields are empty.
+  const { data: current, error: fetchErr } = await supabase
+    .from('outreach_logs')
+    .select('name, job_title')
+    .eq('id', input.contact_id)
+    .maybeSingle()
+  if (fetchErr || !current) {
+    return { ok: false, error: fetchErr?.message ?? 'contact not found' }
+  }
+
+  const updates: Record<string, unknown> = {}
+  if (!current.name && input.name) updates.name = input.name
+  if (!current.job_title && input.jobTitle) updates.job_title = input.jobTitle
+  if (Object.keys(updates).length === 0) {
+    return { ok: true }
+  }
+
+  const { error: updErr } = await supabase
+    .from('outreach_logs')
+    .update(updates)
+    .eq('id', input.contact_id)
+  if (updErr) return { ok: false, error: updErr.message }
+  console.log('[contacts] enriched contact from LI profile →', input.contact_id, Object.keys(updates))
+  return { ok: true }
+}
+
 async function attachLidToExistingContact(input: {
   contact_id: string
   lid: string
@@ -944,5 +1031,17 @@ export function registerContactIpc(): void {
   )
   ipcMain.handle('contact:byLinkedinUrl', (_event, url: string) =>
     findContactByLinkedinUrl(url),
+  )
+  ipcMain.handle(
+    'contact:createFromLinkedinProfile',
+    (_event, input: { url: string; name: string; jobTitle: string | null }) =>
+      createContactFromLinkedinProfile(input),
+  )
+  ipcMain.handle(
+    'contact:enrichFromLinkedinProfile',
+    (
+      _event,
+      input: { contact_id: string; name: string | null; jobTitle: string | null },
+    ) => enrichContactFromLinkedinProfile(input),
   )
 }

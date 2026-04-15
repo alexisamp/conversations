@@ -165,6 +165,16 @@ export type ConvApi = {
     createFromParticipant(input: CreateContactInput): Promise<CreateContactResult>
     attachPhone(input: AttachPhoneInput): Promise<WriteResult>
     attachLid(input: AttachLidInput): Promise<WriteResult>
+    createFromLinkedinProfile(input: {
+      url: string
+      name: string
+      jobTitle: string | null
+    }): Promise<CreateContactResult>
+    enrichFromLinkedinProfile(input: {
+      contact_id: string
+      name: string | null
+      jobTitle: string | null
+    }): Promise<WriteResult>
   }
   sidebar: {
     onContext(cb: (ctx: SidebarContext) => void): void
