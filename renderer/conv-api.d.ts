@@ -56,6 +56,18 @@ export type ContactDetail = {
   active_opportunities: OpportunitySummary[]
 }
 
+export type ContactBrief = {
+  id: string
+  name: string
+  job_title: string | null
+  company: string | null
+  profile_photo_url: string | null
+  tier: number | null
+  last_interaction_at: string | null
+  status: string | null
+  linkedin_url: string | null
+}
+
 export type LogInteractionInput = {
   contact_id: string
   type: string
@@ -73,10 +85,38 @@ export type AddValueLogInput = {
 
 export type WriteResult = { ok: true } | { ok: false; error: string }
 
-export type ChatChangedEvent = {
-  phone: string | null
-  name: string | null
+export type CreateContactInput = {
+  name: string
+  linkedin_url: string | null
+  phone: string
+  waName: string | null
 }
+
+export type CreateContactResult =
+  | { ok: true; contactId: string; enriched: boolean }
+  | { ok: false; error: string }
+
+export type AttachPhoneInput = {
+  contact_id: string
+  phone: string
+  waName: string | null
+}
+
+export type GroupParticipant = {
+  phone: string
+  waName: string | null
+  avatarDataUrl: string | null
+}
+
+export type ChatChangedEvent =
+  | { kind: 'none' }
+  | { kind: 'person'; phone: string; name: string | null }
+  | {
+      kind: 'group'
+      groupId: string
+      name: string | null
+      participants: GroupParticipant[]
+    }
 
 export type ConvApi = {
   auth: {
@@ -89,9 +129,16 @@ export type ConvApi = {
     byPhone(phone: string): Promise<ContactDetail | null>
     logInteraction(input: LogInteractionInput): Promise<WriteResult>
     addValueLog(input: AddValueLogInput): Promise<WriteResult>
+    briefsByPhones(phones: string[]): Promise<Record<string, ContactBrief | null>>
+    searchByName(query: string): Promise<ContactBrief[]>
+    createFromParticipant(input: CreateContactInput): Promise<CreateContactResult>
+    attachPhone(input: AttachPhoneInput): Promise<WriteResult>
   }
   chat: {
     onChanged(cb: (event: ChatChangedEvent) => void): void
+  }
+  wa: {
+    navigateToDm(phone: string): Promise<{ ok: boolean; error?: string }>
   }
   sidebar: {
     toggle(): Promise<void>

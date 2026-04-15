@@ -1,36 +1,37 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { ContactDetailScreen } from './ContactDetailScreen'
-import type { ContactDetail } from '../conv-api'
+import { GroupScreen } from './GroupScreen'
+import type { ContactDetail, GroupParticipant } from '../conv-api'
 
 type LookupState =
   | { kind: 'idle' }
   | { kind: 'no-active-chat' }
-  | { kind: 'loading'; phone: string }
-  | { kind: 'not-found'; phone: string; waName: string | null }
-  | { kind: 'found'; contact: ContactDetail }
+  | { kind: 'loading-person'; phone: string }
+  | { kind: 'person-not-found'; phone: string; waName: string | null }
+  | { kind: 'person-found'; contact: ContactDetail }
+  | {
+      kind: 'group'
+      groupId: string
+      name: string | null
+      participants: GroupParticipant[]
+    }
   | { kind: 'error'; message: string }
 
 export function MainScreen({ email }: { email: string }) {
   const [phoneInput, setPhoneInput] = useState('')
   const [state, setState] = useState<LookupState>({ kind: 'no-active-chat' })
-  // Track the last successful phone so writes can re-fetch.
   const lastHitPhoneRef = useRef<string | null>(null)
-  // Track the auto-detected chat so we know when to re-fetch on writes.
-  const autoChatRef = useRef<{ phone: string | null; name: string | null }>({
-    phone: null,
-    name: null,
-  })
 
-  const runLookup = useCallback(
+  const runPersonLookup = useCallback(
     async (rawPhone: string, waName: string | null = null) => {
-      setState({ kind: 'loading', phone: rawPhone })
+      setState({ kind: 'loading-person', phone: rawPhone })
       try {
         const contact = await window.conv.contact.byPhone(rawPhone)
         if (contact) {
-          setState({ kind: 'found', contact })
+          setState({ kind: 'person-found', contact })
           lastHitPhoneRef.current = rawPhone
         } else {
-          setState({ kind: 'not-found', phone: rawPhone, waName })
+          setState({ kind: 'person-not-found', phone: rawPhone, waName })
         }
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Lookup failed'
@@ -43,27 +44,36 @@ export function MainScreen({ email }: { email: string }) {
   // Subscribe to active-chat changes from the WhatsApp preload.
   useEffect(() => {
     window.conv.chat.onChanged((event) => {
-      autoChatRef.current = event
-      if (event.phone) {
-        runLookup(event.phone, event.name)
-      } else {
-        // Switched out of any chat (e.g. landed on the chat list / settings)
+      if (event.kind === 'none') {
         setState({ kind: 'no-active-chat' })
         lastHitPhoneRef.current = null
+        return
       }
+      if (event.kind === 'person') {
+        runPersonLookup(event.phone, event.name)
+        return
+      }
+      // group
+      setState({
+        kind: 'group',
+        groupId: event.groupId,
+        name: event.name,
+        participants: event.participants,
+      })
+      lastHitPhoneRef.current = null
     })
-  }, [runLookup])
+  }, [runPersonLookup])
 
   async function handleManualSubmit(event: React.FormEvent) {
     event.preventDefault()
     const trimmed = phoneInput.trim()
     if (!trimmed) return
-    await runLookup(trimmed)
+    await runPersonLookup(trimmed)
   }
 
   async function handleRefresh() {
     if (lastHitPhoneRef.current) {
-      await runLookup(lastHitPhoneRef.current, autoChatRef.current.name)
+      await runPersonLookup(lastHitPhoneRef.current)
     }
   }
 
@@ -93,7 +103,7 @@ export function MainScreen({ email }: { email: string }) {
           />
           <button
             type="submit"
-            disabled={state.kind === 'loading' || !phoneInput.trim()}
+            disabled={state.kind === 'loading-person' || !phoneInput.trim()}
           >
             Look up
           </button>
@@ -110,10 +120,10 @@ export function MainScreen({ email }: { email: string }) {
           </div>
         )}
         {state.kind === 'idle' && <div className="empty">Idle.</div>}
-        {state.kind === 'loading' && (
+        {state.kind === 'loading-person' && (
           <div className="loading">Looking up {state.phone}…</div>
         )}
-        {state.kind === 'not-found' && (
+        {state.kind === 'person-not-found' && (
           <div className="empty">
             <strong>Not in reThink</strong>
             <div className="muted">{state.waName ?? state.phone}</div>
@@ -124,8 +134,15 @@ export function MainScreen({ email }: { email: string }) {
           </div>
         )}
         {state.kind === 'error' && <div className="error">{state.message}</div>}
-        {state.kind === 'found' && (
+        {state.kind === 'person-found' && (
           <ContactDetailScreen contact={state.contact} onRefresh={handleRefresh} />
+        )}
+        {state.kind === 'group' && (
+          <GroupScreen
+            groupId={state.groupId}
+            groupName={state.name}
+            participants={state.participants}
+          />
         )}
       </div>
     </div>

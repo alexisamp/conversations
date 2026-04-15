@@ -238,13 +238,29 @@ function registerIpc(): void {
   registerContactIpc()
 
   // Forward active-chat changes detected by the WhatsApp preload to the sidebar.
-  ipcMain.on(
-    'wa:chat:changed',
-    (_event, payload: { phone: string | null; name: string | null }) => {
-      console.log('[main] wa:chat:changed →', payload)
-      sidebarView?.webContents.send('chat:changed', payload)
-    },
-  )
+  // Payload is a union: { kind: 'none' } | { kind: 'person', ... } | { kind: 'group', ... }
+  ipcMain.on('wa:chat:changed', (_event, payload: unknown) => {
+    console.log('[main] wa:chat:changed →', payload)
+    sidebarView?.webContents.send('chat:changed', payload)
+  })
+
+  // Navigate the WhatsApp view to a private DM with a phone number.
+  // Uses the wa.me→web.whatsapp.com/send?phone= URL which WA handles natively.
+  ipcMain.handle('wa:navigate-to-dm', async (_event, phone: string) => {
+    if (!whatsappView) return { ok: false, error: 'WhatsApp view not ready' }
+    const normalized = phone.replace(/^\+/, '').replace(/\D/g, '')
+    if (!normalized) return { ok: false, error: 'Invalid phone' }
+    const url = `https://web.whatsapp.com/send?phone=${normalized}`
+    try {
+      await whatsappView.webContents.loadURL(url)
+      return { ok: true }
+    } catch (err) {
+      return {
+        ok: false,
+        error: err instanceof Error ? err.message : 'Navigation failed',
+      }
+    }
+  })
 }
 
 // ---------- Lifecycle ----------

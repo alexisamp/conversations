@@ -59,6 +59,18 @@ export type ContactDetail = {
   active_opportunities: OpportunitySummary[]
 }
 
+export type ContactBrief = {
+  id: string
+  name: string
+  job_title: string | null
+  company: string | null
+  profile_photo_url: string | null
+  tier: number | null
+  last_interaction_at: string | null
+  status: string | null
+  linkedin_url: string | null
+}
+
 export type LogInteractionInput = {
   contact_id: string
   type: string
@@ -76,10 +88,38 @@ export type AddValueLogInput = {
 
 export type WriteResult = { ok: true } | { ok: false; error: string }
 
-export type ChatChangedEvent = {
-  phone: string | null
-  name: string | null
+export type CreateContactInput = {
+  name: string
+  linkedin_url: string | null
+  phone: string
+  waName: string | null
 }
+
+export type CreateContactResult =
+  | { ok: true; contactId: string; enriched: boolean }
+  | { ok: false; error: string }
+
+export type AttachPhoneInput = {
+  contact_id: string
+  phone: string
+  waName: string | null
+}
+
+export type GroupParticipant = {
+  phone: string
+  waName: string | null
+  avatarDataUrl: string | null
+}
+
+export type ChatChangedEvent =
+  | { kind: 'none' }
+  | { kind: 'person'; phone: string; name: string | null }
+  | {
+      kind: 'group'
+      groupId: string
+      name: string | null
+      participants: GroupParticipant[]
+    }
 
 const api = {
   auth: {
@@ -97,6 +137,16 @@ const api = {
       ipcRenderer.invoke('contact:logInteraction', input),
     addValueLog: (input: AddValueLogInput): Promise<WriteResult> =>
       ipcRenderer.invoke('contact:addValueLog', input),
+    briefsByPhones: (
+      phones: string[],
+    ): Promise<Record<string, ContactBrief | null>> =>
+      ipcRenderer.invoke('contact:briefsByPhones', phones),
+    searchByName: (query: string): Promise<ContactBrief[]> =>
+      ipcRenderer.invoke('contact:searchByName', query),
+    createFromParticipant: (input: CreateContactInput): Promise<CreateContactResult> =>
+      ipcRenderer.invoke('contact:createFromParticipant', input),
+    attachPhone: (input: AttachPhoneInput): Promise<WriteResult> =>
+      ipcRenderer.invoke('contact:attachPhone', input),
   },
   chat: {
     onChanged: (cb: (event: ChatChangedEvent) => void): void => {
@@ -104,6 +154,10 @@ const api = {
         cb(payload),
       )
     },
+  },
+  wa: {
+    navigateToDm: (phone: string): Promise<{ ok: boolean; error?: string }> =>
+      ipcRenderer.invoke('wa:navigate-to-dm', phone),
   },
   sidebar: {
     toggle: (): Promise<void> => ipcRenderer.invoke('sidebar:toggle'),

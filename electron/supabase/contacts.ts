@@ -75,6 +75,30 @@ export type AddValueLogInput = {
 
 export type WriteResult = { ok: true } | { ok: false; error: string }
 
+// Compact shape used by the group sidebar — one row per participant.
+export type ContactBrief = {
+  id: string
+  name: string
+  job_title: string | null
+  company: string | null
+  profile_photo_url: string | null
+  tier: number | null
+  last_interaction_at: string | null
+  status: string | null
+  linkedin_url: string | null
+}
+
+export type CreateContactInput = {
+  name: string
+  linkedin_url: string | null
+  phone: string
+  waName: string | null
+}
+
+export type CreateContactResult =
+  | { ok: true; contactId: string; enriched: boolean }
+  | { ok: false; error: string }
+
 // ─── Reads ───────────────────────────────────────────────────────────────────
 
 async function resolveContactIdByPhone(phone: string): Promise<string | null> {
@@ -340,6 +364,215 @@ async function addValueLog(input: AddValueLogInput): Promise<WriteResult> {
   return { ok: true }
 }
 
+// ─── Batch lookup (for group participants) ───────────────────────────────────
+
+const BRIEF_COLUMNS =
+  'id, name, job_title, company, profile_photo_url, tier, last_interaction_at, status, linkedin_url'
+
+async function getContactBriefsByPhones(
+  phones: string[],
+): Promise<Record<string, ContactBrief | null>> {
+  const result: Record<string, ContactBrief | null> = {}
+  if (phones.length === 0) return result
+  for (const p of phones) result[p] = null
+
+  const supabase = getSupabase()
+
+  // Collect all variants across all phones so we can query with a single IN.
+  const allVariants = new Set<string>()
+  const phoneToVariants = new Map<string, string[]>()
+  for (const p of phones) {
+    const v = phoneVariants(p)
+    phoneToVariants.set(p, v)
+    for (const x of v) allVariants.add(x)
+  }
+  const variantsArr = Array.from(allVariants)
+
+  // Parallel lookups across the three sources. Each query returns the matching
+  // variant so we can map results back to the originally requested phones.
+  const [channelsRes, mappingsRes, directRes] = await Promise.all([
+    supabase
+      .from('contact_channels')
+      .select('outreach_log_id, channel_identifier')
+      .eq('channel', 'whatsapp')
+      .in('channel_identifier', variantsArr),
+    supabase
+      .from('contact_phone_mappings')
+      .select('contact_id, phone_number')
+      .in('phone_number', variantsArr),
+    supabase.from('outreach_logs').select('id, phone').in('phone', variantsArr),
+  ])
+
+  const variantToContactId = new Map<string, string>()
+  for (const row of (channelsRes.data ?? []) as Array<{
+    outreach_log_id: string
+    channel_identifier: string
+  }>) {
+    variantToContactId.set(row.channel_identifier, row.outreach_log_id)
+  }
+  for (const row of (mappingsRes.data ?? []) as Array<{
+    contact_id: string
+    phone_number: string
+  }>) {
+    if (!variantToContactId.has(row.phone_number)) {
+      variantToContactId.set(row.phone_number, row.contact_id)
+    }
+  }
+  for (const row of (directRes.data ?? []) as Array<{ id: string; phone: string | null }>) {
+    if (row.phone && !variantToContactId.has(row.phone)) {
+      variantToContactId.set(row.phone, row.id)
+    }
+  }
+
+  // Resolve each phone to a contact_id via any of its variants.
+  const phoneToContactId = new Map<string, string>()
+  const contactIdsNeeded = new Set<string>()
+  for (const [phone, variants] of phoneToVariants) {
+    for (const v of variants) {
+      const id = variantToContactId.get(v)
+      if (id) {
+        phoneToContactId.set(phone, id)
+        contactIdsNeeded.add(id)
+        break
+      }
+    }
+  }
+
+  if (contactIdsNeeded.size === 0) return result
+
+  // Batch-fetch briefs for all matched contacts in one query.
+  const { data: briefs, error: briefsErr } = await supabase
+    .from('outreach_logs')
+    .select(BRIEF_COLUMNS)
+    .in('id', Array.from(contactIdsNeeded))
+
+  if (briefsErr) {
+    console.error('[contacts] brief batch fetch failed:', briefsErr)
+    return result
+  }
+
+  const briefsById = new Map<string, ContactBrief>()
+  for (const b of (briefs ?? []) as ContactBrief[]) briefsById.set(b.id, b)
+
+  for (const [phone, contactId] of phoneToContactId) {
+    result[phone] = briefsById.get(contactId) ?? null
+  }
+  return result
+}
+
+// ─── Search (for mapping modal) ──────────────────────────────────────────────
+
+async function searchContactsByName(query: string, limit = 8): Promise<ContactBrief[]> {
+  const q = query.trim()
+  if (q.length < 2) return []
+  const supabase = getSupabase()
+  const { data, error } = await supabase
+    .from('outreach_logs')
+    .select(BRIEF_COLUMNS)
+    .ilike('name', `%${q}%`)
+    .order('name', { ascending: true })
+    .limit(limit)
+  if (error) {
+    console.error('[contacts] search failed:', error)
+    return []
+  }
+  return (data as ContactBrief[] | null) ?? []
+}
+
+// ─── Create + attach existing ────────────────────────────────────────────────
+
+async function createContactFromParticipant(
+  input: CreateContactInput,
+): Promise<CreateContactResult> {
+  const supabase = getSupabase()
+  const {
+    data: { session },
+  } = await supabase.auth.getSession()
+  if (!session) return { ok: false, error: 'Not signed in' }
+  const userId = session.user.id
+
+  const displayName = input.name.trim() || input.waName || 'Unknown'
+
+  const { data: inserted, error: insertErr } = await supabase
+    .from('outreach_logs')
+    .insert({
+      user_id: userId,
+      name: displayName,
+      linkedin_url: input.linkedin_url,
+      phone: input.phone,
+      status: 'new',
+    })
+    .select('id')
+    .single()
+
+  if (insertErr || !inserted) {
+    console.error('[contacts] create insert failed:', insertErr)
+    return { ok: false, error: insertErr?.message ?? 'insert failed' }
+  }
+
+  const contactId = inserted.id as string
+
+  // Persist the WhatsApp channel mapping so future lookups hit the phone.
+  await supabase.from('contact_channels').insert({
+    outreach_log_id: contactId,
+    channel: 'whatsapp',
+    channel_identifier: input.phone,
+    channel_name: input.waName,
+    verified: true,
+  })
+
+  // Fire LinkedIn enrichment if a URL was provided and apply the result.
+  let enriched = false
+  if (input.linkedin_url) {
+    try {
+      const { data, error } = await supabase.functions.invoke('linkedin-fetch', {
+        body: { url: input.linkedin_url },
+      })
+      if (!error && data) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const d = data as any
+        const updates: Record<string, unknown> = {}
+        if (d.job_title) updates.job_title = d.job_title
+        if (d.company) updates.company = d.company
+        if (d.location) updates.location = d.location
+        const contextParts: string[] = []
+        if (d.followers) contextParts.push(`Followers: ${d.followers}`)
+        if (d.connections) contextParts.push(`Connections: ${d.connections}`)
+        if (d.about) contextParts.push(d.about)
+        if (contextParts.length > 0) updates.personal_context = contextParts.join('\n')
+        if (Object.keys(updates).length > 0) {
+          await supabase.from('outreach_logs').update(updates).eq('id', contactId)
+          enriched = true
+        }
+      }
+    } catch (err) {
+      console.warn('[contacts] linkedin-fetch invoke failed:', err)
+    }
+  }
+
+  return { ok: true, contactId, enriched }
+}
+
+async function attachPhoneToExistingContact(input: {
+  contact_id: string
+  phone: string
+  waName: string | null
+}): Promise<WriteResult> {
+  const supabase = getSupabase()
+  const { error } = await supabase.from('contact_channels').insert({
+    outreach_log_id: input.contact_id,
+    channel: 'whatsapp',
+    channel_identifier: input.phone,
+    channel_name: input.waName,
+    verified: true,
+  })
+  if (error) {
+    console.error('[contacts] attachPhone failed:', error)
+    return { ok: false, error: error.message }
+  }
+  return { ok: true }
+}
+
 // ─── IPC registration ────────────────────────────────────────────────────────
 
 export function registerContactIpc(): void {
@@ -349,5 +582,20 @@ export function registerContactIpc(): void {
   )
   ipcMain.handle('contact:addValueLog', (_event, input: AddValueLogInput) =>
     addValueLog(input),
+  )
+
+  ipcMain.handle('contact:briefsByPhones', (_event, phones: string[]) =>
+    getContactBriefsByPhones(phones),
+  )
+  ipcMain.handle('contact:searchByName', (_event, query: string) =>
+    searchContactsByName(query),
+  )
+  ipcMain.handle('contact:createFromParticipant', (_event, input: CreateContactInput) =>
+    createContactFromParticipant(input),
+  )
+  ipcMain.handle(
+    'contact:attachPhone',
+    (_event, input: { contact_id: string; phone: string; waName: string | null }) =>
+      attachPhoneToExistingContact(input),
   )
 }
