@@ -175,10 +175,39 @@ function scrapeAbout(): string | null {
 }
 
 function scrapePhotoUrl(): string | null {
-  // LinkedIn serves profile photos from media.licdn.com via <img>. Class
-  // names rotate constantly — the old .pv-top-card-profile-picture__image
-  // selector doesn't survive modern releases. Walk from the name h1 and
-  // find the first licdn-hosted image of profile-picture size (≥100px).
+  // LinkedIn serves profile photos from media.licdn.com. The profile photo
+  // and the cover banner are both <img> in the same top-card container,
+  // which fooled every class/size/position heuristic I tried. The ONE
+  // reliable distinction is the URL path fragment LinkedIn bakes into its
+  // CDN names:
+  //
+  //   profile photos → .../profile-displayphoto-shrink_...
+  //   cover banners  → .../profile-displaybackgroundimage-shrink_...
+  //   company logos  → .../company-logo_...
+  //   image feed     → .../image-shrink_...  (posts, not people)
+  //
+  // So the rule is: accept any licdn URL that contains
+  // "profile-displayphoto" and reject every other category.
+
+  function hasBadPath(url: string): boolean {
+    const u = url.toLowerCase()
+    return (
+      u.includes('displaybackgroundimage') ||
+      u.includes('profile-background') ||
+      u.includes('company-logo') ||
+      u.includes('company-background')
+    )
+  }
+
+  function isProfilePhotoUrl(url: string): boolean {
+    const u = url.toLowerCase()
+    if (hasBadPath(u)) return false
+    if (u.includes('profile-displayphoto')) return true
+    // Some newer LI builds use just "displayphoto" without "profile-" prefix.
+    if (u.includes('displayphoto') && !u.includes('displaybackground')) return true
+    return false
+  }
+
   function readSrc(img: HTMLImageElement): string | null {
     const candidates = [
       img.currentSrc,
@@ -190,37 +219,41 @@ function scrapePhotoUrl(): string | null {
     for (const c of candidates) {
       if (!c) continue
       if (c.startsWith('data:') || c.startsWith('blob:')) continue
-      if (c.includes('licdn.com')) return c
+      if (!c.includes('licdn.com')) continue
+      return c
     }
     return null
   }
 
-  function isProfileSized(img: HTMLImageElement): boolean {
-    const w = img.naturalWidth || img.width || parseInt(img.getAttribute('width') ?? '0', 10)
-    const h = img.naturalHeight || img.height || parseInt(img.getAttribute('height') ?? '0', 10)
-    // Reject tiny icons and wide-aspect banners. LinkedIn banners are ~4:1
-    // landscape; profile photos are square. Allow any ratio between 0.66 and
-    // 1.5 (roughly ±50% of square) and require at least 80px on a side.
-    if (w === 0 && h === 0) return true // unloaded, give it a chance
-    if (w < 80 && h < 80) return false
-    if (w > 0 && h > 0) {
-      const ratio = w / h
-      if (ratio < 0.66 || ratio > 1.5) return false
-    }
-    return true
+  // Strategy 1 (strict): look at every licdn <img> anywhere on the page and
+  // accept the FIRST one whose src path marks it as a profile photo.
+  const allImgs = Array.from(
+    document.querySelectorAll<HTMLImageElement>('img'),
+  )
+  for (const img of allImgs) {
+    const src = readSrc(img)
+    if (!src) continue
+    if (isProfilePhotoUrl(src)) return src
   }
 
-  // 1. Prefer images explicitly labelled as profile photos. LinkedIn reliably
-  //    uses an alt text containing the profile owner's name (e.g. "Camila
-  //    Aldunate") on the profile picture. We match those first.
-  const altCandidates = Array.from(
-    document.querySelectorAll<HTMLImageElement>(
-      'main img[alt], main section img[alt], .pv-top-card img[alt]',
-    ),
-  )
-  for (const img of altCandidates) {
+  // Strategy 2 (loose): same list, but also accept any licdn image that
+  // (a) is NOT in the bad-path deny list, (b) has a square-ish aspect
+  // ratio once loaded, and (c) has an alt that isn't a banner/cover label.
+  // This fires as a backup if LinkedIn changes the URL format in a future
+  // release.
+  for (const img of allImgs) {
+    const src = readSrc(img)
+    if (!src) continue
+    if (hasBadPath(src)) continue
+
+    const w = img.naturalWidth || img.width
+    const h = img.naturalHeight || img.height
+    if (!w || !h) continue // not loaded yet — let a retry pick it up
+    const ratio = w / h
+    if (ratio < 0.66 || ratio > 1.5) continue
+    if (w < 80 && h < 80) continue
+
     const alt = (img.getAttribute('alt') ?? '').toLowerCase()
-    // Skip obvious non-profile images
     if (
       alt.includes('background') ||
       alt.includes('cover') ||
@@ -229,33 +262,7 @@ function scrapePhotoUrl(): string | null {
     ) {
       continue
     }
-    if (!isProfileSized(img)) continue
-    const src = readSrc(img)
-    if (src) return src
-  }
-
-  // 2. Structural walk from the name h1 upward — skip images that fail
-  //    the aspect-ratio check (that's how we reject the cover banner).
-  const h1 = document.querySelector('main h1') as HTMLElement | null
-  if (h1) {
-    let container: HTMLElement | null = h1.parentElement
-    for (let depth = 0; depth < 6 && container; depth++) {
-      const imgs = container.querySelectorAll<HTMLImageElement>('img')
-      for (const img of Array.from(imgs)) {
-        if (!isProfileSized(img)) continue
-        const src = readSrc(img)
-        if (src) return src
-      }
-      container = container.parentElement
-    }
-  }
-
-  // 2. Fallback: any licdn image on the page with profile-picture size.
-  const allImgs = document.querySelectorAll<HTMLImageElement>('main img, section img')
-  for (const img of Array.from(allImgs)) {
-    if (!isProfileSized(img)) continue
-    const src = readSrc(img)
-    if (src) return src
+    return src
   }
 
   return null
