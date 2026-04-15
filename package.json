@@ -6,7 +6,9 @@
   "main": "dist/electron/main.js",
   "scripts": {
     "clean": "rm -rf dist",
-    "build:main": "tsc -p tsconfig.main.json",
+    "postinstall": "electron-rebuild -f -w better-sqlite3",
+    "rebuild:native": "electron-rebuild -f -w better-sqlite3",
+    "build:main": "tsc -p tsconfig.main.json && mkdir -p dist/electron/db && cp electron/db/schema.sql dist/electron/db/schema.sql",
     "build:renderer": "vite build",
     "build": "npm run build:main && npm run build:renderer",
     "start": "npm run build && electron .",
@@ -17,10 +19,13 @@
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.46.1",
+    "better-sqlite3": "^12.9.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },
   "devDependencies": {
+    "@electron/rebuild": "^3.7.2",
+    "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^22.9.0",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
