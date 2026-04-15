@@ -815,13 +815,19 @@ async function createContactFromParticipant(
   // Fire LinkedIn enrichment if a URL was provided and apply the result.
   let enriched = false
   if (input.linkedin_url) {
+    console.log('[contacts] invoking linkedin-fetch for →', input.linkedin_url)
     try {
       const { data, error } = await supabase.functions.invoke('linkedin-fetch', {
         body: { url: input.linkedin_url },
       })
-      if (!error && data) {
+      if (error) {
+        console.error('[contacts] linkedin-fetch error:', error)
+      } else if (!data) {
+        console.warn('[contacts] linkedin-fetch returned no data')
+      } else {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const d = data as any
+        console.log('[contacts] linkedin-fetch response keys:', Object.keys(d ?? {}))
         const updates: Record<string, unknown> = {}
         if (d.job_title) updates.job_title = d.job_title
         if (d.company) updates.company = d.company
@@ -831,13 +837,25 @@ async function createContactFromParticipant(
         if (d.connections) contextParts.push(`Connections: ${d.connections}`)
         if (d.about) contextParts.push(d.about)
         if (contextParts.length > 0) updates.personal_context = contextParts.join('\n')
+        console.log(
+          '[contacts] linkedin-fetch extracted fields:',
+          Object.keys(updates),
+        )
         if (Object.keys(updates).length > 0) {
-          await supabase.from('outreach_logs').update(updates).eq('id', contactId)
-          enriched = true
+          const { error: updateErr } = await supabase
+            .from('outreach_logs')
+            .update(updates)
+            .eq('id', contactId)
+          if (updateErr) {
+            console.error('[contacts] outreach_logs enrichment update failed:', updateErr)
+          } else {
+            enriched = true
+            console.log('[contacts] enrichment applied to contact', contactId)
+          }
         }
       }
     } catch (err) {
-      console.warn('[contacts] linkedin-fetch invoke failed:', err)
+      console.error('[contacts] linkedin-fetch invoke threw:', err)
     }
   }
 

@@ -88,7 +88,7 @@ function tick(): void {
   if (!parsed) {
     if (currentKey !== 'none') {
       currentKey = 'none'
-      console.log('[li-preload] not on a profile')
+      console.log('[li-preload] not on a profile (url=' + href + ')')
       ipcRenderer.send('li:profile:changed', { kind: 'none' })
     }
     return
@@ -96,15 +96,15 @@ function tick(): void {
 
   const key = 'profile:' + parsed.slug
   if (key === currentKey) return
+  currentKey = key
 
-  // LinkedIn's SPA takes a moment to render the new profile after URL change.
-  // Name/title may be stale for a frame. Do a short second pass.
-  setTimeout(() => {
+  // Emit immediately so the backend slug-based lookup can fire even before
+  // LinkedIn finishes rendering name/title. If the scrape succeeds later
+  // (retries below), we re-emit with the enriched info.
+  const emit = (source: string) => {
     const name = scrapeName()
     const jobTitle = scrapeJobTitle()
     const avatarDataUrl = scrapeAvatar()
-    if (!name) return // wait for next tick if DOM not ready yet
-    currentKey = key
     const profile: LinkedinProfile = {
       url: parsed.url,
       slug: parsed.slug,
@@ -112,9 +112,26 @@ function tick(): void {
       jobTitle,
       avatarDataUrl,
     }
-    console.log('[li-preload] profile →', profile.url, profile.name)
+    console.log(
+      `[li-preload] profile(${source}) → ${profile.url} name=${name ?? 'null'} title=${jobTitle ?? 'null'}`,
+    )
     ipcRenderer.send('li:profile:changed', { kind: 'profile', ...profile })
-  }, 200)
+  }
+
+  // First shot — sometimes the DOM is already ready, especially after a
+  // client-side route change.
+  emit('fast')
+
+  // Retry passes in case name/title weren't mounted yet. Stops early if the
+  // user navigated away to another profile (currentKey changed).
+  const retryDelays = [300, 800, 1800]
+  retryDelays.forEach((delay) => {
+    setTimeout(() => {
+      if (currentKey !== key) return
+      const name = scrapeName()
+      if (name) emit(`retry-${delay}ms`)
+    }, delay)
+  })
 }
 
 function start(): void {
