@@ -175,24 +175,58 @@ function scrapeAbout(): string | null {
 }
 
 function scrapePhotoUrl(): string | null {
-  // LinkedIn serves profile photos from media.licdn.com via a <img>. These
-  // URLs are publicly accessible for some time — good enough to persist in
-  // outreach_logs.profile_photo_url (we'll upload to Supabase storage in a
-  // later phase so we own the bits).
-  const candidates = [
-    'img.pv-top-card-profile-picture__image',
-    'img.profile-photo-edit__preview',
-    'main img[alt*="profile photo"]',
-    'main section img[class*="profile-picture"]',
-  ]
-  for (const sel of candidates) {
-    const el = document.querySelector(sel) as HTMLImageElement | null
-    if (!el || !el.src) continue
-    if (el.src.startsWith('data:') || el.src.startsWith('blob:')) continue
-    if (el.src.includes('media.licdn.com') || el.src.includes('licdn.com')) {
-      return el.src
+  // LinkedIn serves profile photos from media.licdn.com via <img>. Class
+  // names rotate constantly — the old .pv-top-card-profile-picture__image
+  // selector doesn't survive modern releases. Walk from the name h1 and
+  // find the first licdn-hosted image of profile-picture size (≥100px).
+  function readSrc(img: HTMLImageElement): string | null {
+    const candidates = [
+      img.currentSrc,
+      img.src,
+      img.getAttribute('src'),
+      img.getAttribute('data-delayed-url'),
+      img.getAttribute('data-src'),
+    ]
+    for (const c of candidates) {
+      if (!c) continue
+      if (c.startsWith('data:') || c.startsWith('blob:')) continue
+      if (c.includes('licdn.com')) return c
+    }
+    return null
+  }
+
+  function isProfileSized(img: HTMLImageElement): boolean {
+    const w = img.naturalWidth || img.width || parseInt(img.getAttribute('width') ?? '0', 10)
+    const h = img.naturalHeight || img.height || parseInt(img.getAttribute('height') ?? '0', 10)
+    // Reject tiny icons; accept anything roughly square and ≥80px
+    if (w === 0 && h === 0) return true // unloaded, give it a chance
+    return w >= 80 || h >= 80
+  }
+
+  // 1. Structural walk from the name h1 upward — the profile photo lives
+  //    in the top-card ancestor.
+  const h1 = document.querySelector('main h1') as HTMLElement | null
+  if (h1) {
+    let container: HTMLElement | null = h1.parentElement
+    for (let depth = 0; depth < 6 && container; depth++) {
+      const imgs = container.querySelectorAll<HTMLImageElement>('img')
+      for (const img of Array.from(imgs)) {
+        if (!isProfileSized(img)) continue
+        const src = readSrc(img)
+        if (src) return src
+      }
+      container = container.parentElement
     }
   }
+
+  // 2. Fallback: any licdn image on the page with profile-picture size.
+  const allImgs = document.querySelectorAll<HTMLImageElement>('main img, section img')
+  for (const img of Array.from(allImgs)) {
+    if (!isProfileSized(img)) continue
+    const src = readSrc(img)
+    if (src) return src
+  }
+
   return null
 }
 
