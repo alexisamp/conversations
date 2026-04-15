@@ -4,6 +4,7 @@
 
 import { ipcMain } from 'electron'
 import { getSupabase } from './client'
+import { phoneVariants } from '../utils/phone'
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -76,23 +77,72 @@ export type WriteResult = { ok: true } | { ok: false; error: string }
 
 // ─── Reads ───────────────────────────────────────────────────────────────────
 
+async function resolveContactIdByPhone(phone: string): Promise<string | null> {
+  const supabase = getSupabase()
+  const trimmed = phone.trim()
+  if (!trimmed) return null
+
+  const variants = phoneVariants(trimmed)
+
+  // Source 1 (primary): contact_channels — the unified channels table. This is
+  // where reThink writes new mappings and where multi-phone / multi-channel
+  // contacts live.
+  try {
+    const { data, error } = await supabase
+      .from('contact_channels')
+      .select('outreach_log_id')
+      .eq('channel', 'whatsapp')
+      .in('channel_identifier', variants)
+      .limit(1)
+      .maybeSingle()
+    if (!error && data) {
+      console.log('[contacts] match via contact_channels →', trimmed)
+      return data.outreach_log_id as string
+    }
+  } catch (err) {
+    // contact_channels may not exist in all schemas; don't fail the whole lookup
+    console.warn('[contacts] contact_channels query failed:', err)
+  }
+
+  // Source 2 (legacy): contact_phone_mappings — what the old extension wrote
+  // and what my earlier code was exclusively querying.
+  {
+    const { data, error } = await supabase
+      .from('contact_phone_mappings')
+      .select('contact_id')
+      .in('phone_number', variants)
+      .limit(1)
+      .maybeSingle()
+    if (!error && data) {
+      console.log('[contacts] match via contact_phone_mappings →', trimmed)
+      return data.contact_id as string
+    }
+  }
+
+  // Source 3 (extra safety): direct match on outreach_logs.phone. Catches any
+  // contact that was created with a phone but never got a row in either of the
+  // mapping tables above.
+  {
+    const { data, error } = await supabase
+      .from('outreach_logs')
+      .select('id')
+      .in('phone', variants)
+      .limit(1)
+      .maybeSingle()
+    if (!error && data) {
+      console.log('[contacts] match via outreach_logs.phone →', trimmed)
+      return data.id as string
+    }
+  }
+
+  console.log('[contacts] no match for phone →', trimmed, 'variants:', variants)
+  return null
+}
+
 async function findContactByPhone(phone: string): Promise<ContactDetail | null> {
   const supabase = getSupabase()
-  const normalized = phone.trim()
-  if (!normalized) return null
-
-  const { data: mapping, error: mappingErr } = await supabase
-    .from('contact_phone_mappings')
-    .select('contact_id')
-    .eq('phone_number', normalized)
-    .maybeSingle()
-  if (mappingErr) {
-    console.error('[contacts] mapping lookup failed:', mappingErr)
-    return null
-  }
-  if (!mapping) return null
-
-  const contactId = mapping.contact_id as string
+  const contactId = await resolveContactIdByPhone(phone)
+  if (!contactId) return null
 
   const contactPromise = supabase
     .from('outreach_logs')
