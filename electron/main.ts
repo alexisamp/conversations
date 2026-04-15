@@ -130,9 +130,35 @@ const TAB_BAR_HTML = `<!doctype html>
   </script>
 </body></html>`
 
+// ─── Session hardening ──────────────────────────────────────────────
+// Google (and a few other sites) detect embedded browsers by sniffing the
+// Sec-CH-UA client-hint headers, which Chromium/Electron populates with
+// "Electron" in the brand list. Stripping those headers drops Google's
+// detection heuristic to UA-only, which we already spoof.
+function sanitizeClientHints(s: Electron.Session): void {
+  s.webRequest.onBeforeSendHeaders((details, callback) => {
+    const headers: Record<string, string> = { ...details.requestHeaders }
+    for (const key of Object.keys(headers)) {
+      if (key.toLowerCase().startsWith('sec-ch-ua')) {
+        delete headers[key]
+      }
+    }
+    callback({ requestHeaders: headers })
+  })
+}
+
 // ─── Window creation ─────────────────────────────────────────────────
 async function createMainWindow(): Promise<void> {
   session.defaultSession.setUserAgent(CHROME_UA)
+
+  // Strip Electron-flavored client hints from every partition we drive.
+  const waSession = session.fromPartition('persist:whatsapp')
+  const liSession = session.fromPartition('persist:linkedin')
+  waSession.setUserAgent(CHROME_UA)
+  liSession.setUserAgent(CHROME_UA)
+  sanitizeClientHints(waSession)
+  sanitizeClientHints(liSession)
+  sanitizeClientHints(session.defaultSession)
 
   mainWindow = new BaseWindow({
     width: 1400,

@@ -51,12 +51,15 @@ function firstChatSegment(dataId: string): string | null {
 }
 
 function lastSenderPhone(dataId: string): string | null {
-  // For group messages, the sender phone is the last segment ending in @c.us.
-  const parts = dataId.split('_')
-  const last = parts[parts.length - 1]
-  if (!last || !last.endsWith('@c.us')) return null
-  const phone = last.slice(0, -'@c.us'.length)
-  return /^\d+$/.test(phone) ? phone : null
+  // Group message data-ids carry the sender as a trailing "_PHONE@c.us"
+  // or "_PHONE@lid" segment. "@lid" is the newer "Linked ID" format that
+  // WhatsApp rolled out — older code only checked "@c.us" and missed it.
+  // We look at any "DIGITS@(c.us|lid)" segment, prefer the LAST one, and
+  // skip group-id segments (which live in "@g.us").
+  const matches = Array.from(dataId.matchAll(/(\d+)@(?:c\.us|lid)/g))
+  if (matches.length === 0) return null
+  const last = matches[matches.length - 1]
+  return last[1]
 }
 
 function getActiveChatIdentity(): ChatIdentity {
@@ -107,9 +110,9 @@ function extractWaNameFromMessageEl(msg: Element): string | null {
 
 function captureAvatarFor(phone: string): string | null {
   if (avatarCache.has(phone)) return avatarCache.get(phone)!
-  const messages = Array.from(
-    document.querySelectorAll(`[data-id$="_${phone}@c.us"]`),
-  )
+  // Look for messages whose data-id ends with this participant's @c.us or @lid suffix.
+  const selector = `[data-id$="_${phone}@c.us"], [data-id$="_${phone}@lid"]`
+  const messages = Array.from(document.querySelectorAll(selector))
   for (const msg of messages) {
     // The avatar is usually an <img> inside or beside the message row.
     // Walk outward a couple of levels and look for a blob:-src image.
@@ -156,6 +159,8 @@ function getGroupParticipants(): Participant[] {
 // ─────────────────────────────────────────────────────────────────────
 // Emitter
 
+let diagnosticLoggedForGroup: string | null = null
+
 function tick(): void {
   let identity: ChatIdentity = { kind: 'none' }
   try {
@@ -170,6 +175,17 @@ function tick(): void {
     signature = 'person:' + identity.phone
   } else if (identity.kind === 'group') {
     const participants = getGroupParticipants()
+
+    // One-shot diagnostic: if we landed in a group but couldn't pull any
+    // participants, dump a few raw data-ids so we can see what WA changed.
+    if (participants.length === 0 && diagnosticLoggedForGroup !== identity.groupId) {
+      diagnosticLoggedForGroup = identity.groupId
+      const samples = Array.from(document.querySelectorAll('[data-id]'))
+        .slice(0, 8)
+        .map((el) => el.getAttribute('data-id'))
+      console.warn('[wa-preload] group but 0 participants. samples:', samples)
+    }
+
     const phones = participants.map((p) => p.phone).sort().join(',')
     signature = 'group:' + identity.groupId + '|' + phones
     if (signature !== currentSignature) {
