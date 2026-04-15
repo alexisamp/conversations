@@ -254,6 +254,11 @@ async function createMainWindow(): Promise<void> {
   })
   linkedinView.webContents.setUserAgent(CHROME_UA)
   attachDiagnosticListeners(linkedinView, 'li')
+
+  // Mirror the WhatsApp zoom (0.8) so LinkedIn also renders denser.
+  linkedinView.webContents.on('did-finish-load', () => {
+    linkedinView?.webContents.setZoomFactor(0.8)
+  })
   linkedinView.webContents.setWindowOpenHandler(({ url }) => {
     // If LinkedIn opens a new window to another LI profile, navigate in-place.
     if (url.includes('linkedin.com')) {

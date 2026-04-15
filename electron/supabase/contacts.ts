@@ -5,7 +5,7 @@
 import { ipcMain } from 'electron'
 import { getSupabase } from './client'
 import { phoneVariants } from '../utils/phone'
-import { linkedinUrlVariants } from '../utils/linkedin'
+import { linkedinSlug, linkedinUrlVariants } from '../utils/linkedin'
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -167,9 +167,12 @@ async function resolveContactIdByPhone(phone: string): Promise<string | null> {
 async function resolveContactIdByLinkedinUrl(url: string): Promise<string | null> {
   const supabase = getSupabase()
   const variants = linkedinUrlVariants(url)
+  const slug = linkedinSlug(url)
   if (variants.length === 0) return null
 
-  // Source 1: contact_channels (unified)
+  console.log('[contacts] LI lookup →', url, 'slug=', slug, 'variants=', variants)
+
+  // Source 1: exact match in contact_channels
   try {
     const { data } = await supabase
       .from('contact_channels')
@@ -179,14 +182,14 @@ async function resolveContactIdByLinkedinUrl(url: string): Promise<string | null
       .limit(1)
       .maybeSingle()
     if (data) {
-      console.log('[contacts] LI match via contact_channels →', url)
+      console.log('[contacts] LI match via contact_channels (exact) →', url)
       return data.outreach_log_id as string
     }
   } catch (err) {
     console.warn('[contacts] contact_channels LI query failed:', err)
   }
 
-  // Source 2: direct outreach_logs.linkedin_url
+  // Source 2: exact match in outreach_logs.linkedin_url
   {
     const { data } = await supabase
       .from('outreach_logs')
@@ -195,8 +198,39 @@ async function resolveContactIdByLinkedinUrl(url: string): Promise<string | null
       .limit(1)
       .maybeSingle()
     if (data) {
-      console.log('[contacts] LI match via outreach_logs.linkedin_url →', url)
+      console.log('[contacts] LI match via outreach_logs.linkedin_url (exact) →', url)
       return data.id as string
+    }
+  }
+
+  // Source 3: slug-based ilike fallback. Handles all the edge cases the
+  // variant list can't — trailing query params, different case in the slug,
+  // historical /in/ formats, etc. The slug is the unique identifier of a
+  // LinkedIn profile, so matching "%in/<slug>%" is semantically correct.
+  if (slug) {
+    const pattern = '%/in/' + slug + '%'
+
+    const { data: chData } = await supabase
+      .from('contact_channels')
+      .select('outreach_log_id')
+      .eq('channel', 'linkedin')
+      .ilike('channel_identifier', pattern)
+      .limit(1)
+      .maybeSingle()
+    if (chData) {
+      console.log('[contacts] LI match via contact_channels (slug ilike) →', slug)
+      return chData.outreach_log_id as string
+    }
+
+    const { data: olData } = await supabase
+      .from('outreach_logs')
+      .select('id')
+      .ilike('linkedin_url', pattern)
+      .limit(1)
+      .maybeSingle()
+    if (olData) {
+      console.log('[contacts] LI match via outreach_logs.linkedin_url (slug ilike) →', slug)
+      return olData.id as string
     }
   }
 
@@ -753,8 +787,11 @@ async function createContactFromParticipant(
       user_id: userId,
       name: displayName,
       linkedin_url: input.linkedin_url,
-      phone: input.phone,
-      status: 'new',
+      phone: input.phone || null,
+      // reThink's status check constraint only accepts these uppercase values:
+      // PROSPECT | INTRO | CONNECTED | RECONNECT | ENGAGED | NURTURING | DORMANT
+      // PROSPECT is the default entry point for a brand-new contact.
+      status: 'PROSPECT',
     })
     .select('id')
     .single()
