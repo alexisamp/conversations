@@ -102,10 +102,23 @@ export type AttachPhoneInput = {
   waName: string | null
 }
 
+export type AttachLidInput = {
+  contact_id: string
+  lid: string
+  waName: string | null
+}
+
 export type GroupParticipant = {
-  phone: string
+  phone: string | null
+  lid: string | null
   waName: string | null
   avatarDataUrl: string | null
+}
+
+export type ParticipantLookupInput = {
+  phone: string | null
+  lid: string | null
+  waName: string | null
 }
 
 export type WaState =
@@ -145,10 +158,13 @@ export type ConvApi = {
     byLinkedinUrl(url: string): Promise<ContactDetail | null>
     logInteraction(input: LogInteractionInput): Promise<WriteResult>
     addValueLog(input: AddValueLogInput): Promise<WriteResult>
-    briefsByPhones(phones: string[]): Promise<Record<string, ContactBrief | null>>
+    briefsForParticipants(
+      participants: ParticipantLookupInput[],
+    ): Promise<Record<string, ContactBrief | null>>
     searchByName(query: string): Promise<ContactBrief[]>
     createFromParticipant(input: CreateContactInput): Promise<CreateContactResult>
     attachPhone(input: AttachPhoneInput): Promise<WriteResult>
+    attachLid(input: AttachLidInput): Promise<WriteResult>
   }
   sidebar: {
     onContext(cb: (ctx: SidebarContext) => void): void

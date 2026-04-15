@@ -45,41 +45,66 @@ export function MapParticipantModal({ participant, onClose, onDone }: Props) {
   async function handleAttach(contact: ContactBrief) {
     setSaving(true)
     setError(null)
-    const result = await window.conv.contact.attachPhone({
-      contact_id: contact.id,
-      phone: participant.phone,
-      waName: participant.waName,
-    })
-    setSaving(false)
-    if (result.ok) {
-      onDone()
+
+    let result
+    if (participant.phone) {
+      result = await window.conv.contact.attachPhone({
+        contact_id: contact.id,
+        phone: participant.phone,
+        waName: participant.waName,
+      })
+    } else if (participant.lid) {
+      result = await window.conv.contact.attachLid({
+        contact_id: contact.id,
+        lid: participant.lid,
+        waName: participant.waName,
+      })
     } else {
-      setError(result.error)
+      setSaving(false)
+      setError('Participant has neither phone nor LID')
+      return
     }
+
+    setSaving(false)
+    if (result.ok) onDone()
+    else setError(result.error)
   }
 
   async function handleCreate() {
     setSaving(true)
     setError(null)
+    // For LID-only participants we create with an empty phone since we don't
+    // have one; we'll still attach the LID as a channel on the new record.
     const result = await window.conv.contact.createFromParticipant({
       name: createName.trim(),
       linkedin_url: createLinkedin.trim() || null,
-      phone: participant.phone,
+      phone: participant.phone ?? '',
       waName: participant.waName,
     })
-    setSaving(false)
-    if (result.ok) {
-      onDone()
-    } else {
-      setError(result.error)
+    if (result.ok && participant.lid && !participant.phone) {
+      // New record created from a LID-only participant; link the LID channel.
+      await window.conv.contact.attachLid({
+        contact_id: result.contactId,
+        lid: participant.lid,
+        waName: participant.waName,
+      })
     }
+    setSaving(false)
+    if (result.ok) onDone()
+    else setError(result.error)
   }
+
+  const subtitle = participant.phone
+    ? participant.phone
+    : 'Linked ID (WhatsApp group participant)'
 
   return (
     <div className="modal-backdrop" onClick={onClose}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
         <div className="modal-header">
-          <div className="modal-title">Add to reThink</div>
+          <div className="modal-title">
+            {participant.lid && !participant.phone ? 'Link to reThink' : 'Add to reThink'}
+          </div>
           <button className="modal-close" onClick={onClose}>
             ×
           </button>
@@ -87,17 +112,28 @@ export function MapParticipantModal({ participant, onClose, onDone }: Props) {
 
         <div className="modal-target">
           <div className="avatar small">
-            <div className="avatar-initials">
-              {initialsOf(participant.waName ?? participant.phone)}
-            </div>
+            {participant.avatarDataUrl ? (
+              <img src={participant.avatarDataUrl} alt={participant.waName ?? ''} />
+            ) : (
+              <div className="avatar-initials">
+                {initialsOf(participant.waName ?? '??')}
+              </div>
+            )}
           </div>
           <div>
             <div className="modal-target-name">
               {participant.waName ?? 'Unknown'}
             </div>
-            <div className="modal-target-phone">{participant.phone}</div>
+            <div className="modal-target-phone">{subtitle}</div>
           </div>
         </div>
+
+        {participant.lid && !participant.phone && (
+          <div className="modal-hint" style={{ padding: '6px 14px 0' }}>
+            Linking once saves this LID so future sightings in any group are
+            recognized automatically.
+          </div>
+        )}
 
         <div className="modal-tabs">
           <button
@@ -149,7 +185,7 @@ export function MapParticipantModal({ participant, onClose, onDone }: Props) {
                       disabled={saving}
                       onClick={() => handleAttach(c)}
                     >
-                      Attach
+                      {participant.lid && !participant.phone ? 'Link' : 'Attach'}
                     </button>
                   </li>
                 ))}
@@ -178,8 +214,8 @@ export function MapParticipantModal({ participant, onClose, onDone }: Props) {
               />
             </label>
             <div className="modal-hint">
-              If you paste a LinkedIn URL, reThink fetches job title, company, and
-              bio automatically.
+              If you paste a LinkedIn URL, reThink fetches job title, company,
+              and bio automatically.
             </div>
             <button
               className="primary"

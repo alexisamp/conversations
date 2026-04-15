@@ -75,10 +75,31 @@ const TAB_BAR_HTML = `<!doctype html>
     display: flex;
     align-items: center;
     height: 38px;
-    padding: 0 10px;
+    padding: 0 10px 0 82px; /* left padding leaves room for macOS traffic lights */
     border-bottom: 1px solid var(--mercury);
     gap: 4px;
   }
+  .nav {
+    -webkit-app-region: no-drag;
+    display: flex;
+    gap: 2px;
+    margin-right: 8px;
+  }
+  .nav button {
+    background: transparent;
+    border: none;
+    width: 26px;
+    height: 26px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    border-radius: 5px;
+    color: var(--shuttle);
+    font-size: 13px;
+    font-family: inherit;
+  }
+  .nav button:hover { background: rgba(0, 55, 32, 0.08); color: var(--burnham); }
   .tab {
     -webkit-app-region: no-drag;
     background: transparent;
@@ -116,6 +137,12 @@ const TAB_BAR_HTML = `<!doctype html>
   .tab.active .shortcut { color: var(--burnham); opacity: 0.7; }
 </style></head><body>
   <div class="tab-bar">
+    <div class="nav">
+      <button id="nav-back" title="Back (⌘[)">‹</button>
+      <button id="nav-forward" title="Forward (⌘])">›</button>
+      <button id="nav-reload" title="Reload (⌘R)">⟳</button>
+      <button id="nav-home" title="Home (⌘⇧H)">⌂</button>
+    </div>
     <button class="tab active" data-tab="wa"><span class="dot" style="background:#25D366"></span>WhatsApp<span class="shortcut">⌘1</span></button>
     <button class="tab" data-tab="li"><span class="dot" style="background:#0A66C2"></span>LinkedIn<span class="shortcut">⌘2</span></button>
   </div>
@@ -124,6 +151,10 @@ const TAB_BAR_HTML = `<!doctype html>
     tabs.forEach(el => {
       el.addEventListener('click', () => window.convTab.switchTab(el.dataset.tab));
     });
+    document.getElementById('nav-back').addEventListener('click', () => window.convTab.back());
+    document.getElementById('nav-forward').addEventListener('click', () => window.convTab.forward());
+    document.getElementById('nav-reload').addEventListener('click', () => window.convTab.reload());
+    document.getElementById('nav-home').addEventListener('click', () => window.convTab.home());
     window.convTab.onActiveChanged((name) => {
       tabs.forEach(el => el.classList.toggle('active', el.dataset.tab === name));
     });
@@ -292,6 +323,10 @@ async function createMainWindow(): Promise<void> {
 
 // ─── Helpers ─────────────────────────────────────────────────────────
 
+function activeContentView(): WebContentsView | null {
+  return activeTab === 'wa' ? whatsappView : linkedinView
+}
+
 function refreshLayout(): void {
   if (!mainWindow || !tabBarView || !whatsappView || !linkedinView || !sidebarView) return
   const active = activeTab === 'wa' ? whatsappView : linkedinView
@@ -411,6 +446,35 @@ function buildMenu(): void {
         },
         { type: 'separator' },
         {
+          label: 'Back',
+          accelerator: 'CmdOrCtrl+[',
+          click: () => {
+            const view = activeContentView()
+            if (view?.webContents.navigationHistory.canGoBack()) {
+              view.webContents.navigationHistory.goBack()
+            }
+          },
+        },
+        {
+          label: 'Forward',
+          accelerator: 'CmdOrCtrl+]',
+          click: () => {
+            const view = activeContentView()
+            if (view?.webContents.navigationHistory.canGoForward()) {
+              view.webContents.navigationHistory.goForward()
+            }
+          },
+        },
+        {
+          label: 'Home',
+          accelerator: 'CmdOrCtrl+Shift+H',
+          click: () => {
+            const url = activeTab === 'wa' ? WHATSAPP_URL : LINKEDIN_URL
+            activeContentView()?.webContents.loadURL(url).catch(() => {})
+          },
+        },
+        { type: 'separator' },
+        {
           label: 'Toggle Sidebar',
           accelerator: 'CmdOrCtrl+Shift+S',
           click: () => toggleSidebar(),
@@ -434,6 +498,27 @@ function registerIpc(): void {
   // Tab bar → switch tab
   ipcMain.on('tab:switch', (_event, next: Tab) => {
     if (next === 'wa' || next === 'li') switchTab(next)
+  })
+
+  // Tab bar → navigate the active content view
+  ipcMain.on('tab:back', () => {
+    const view = activeContentView()
+    if (view?.webContents.navigationHistory.canGoBack()) {
+      view.webContents.navigationHistory.goBack()
+    }
+  })
+  ipcMain.on('tab:forward', () => {
+    const view = activeContentView()
+    if (view?.webContents.navigationHistory.canGoForward()) {
+      view.webContents.navigationHistory.goForward()
+    }
+  })
+  ipcMain.on('tab:reload', () => {
+    activeContentView()?.webContents.reload()
+  })
+  ipcMain.on('tab:home', () => {
+    const url = activeTab === 'wa' ? WHATSAPP_URL : LINKEDIN_URL
+    activeContentView()?.webContents.loadURL(url).catch(() => {})
   })
 
   // WhatsApp preload → store + gate

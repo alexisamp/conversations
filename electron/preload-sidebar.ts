@@ -105,8 +105,17 @@ export type AttachPhoneInput = {
   waName: string | null
 }
 
+export type AttachLidInput = {
+  contact_id: string
+  lid: string
+  waName: string | null
+}
+
 export type GroupParticipant = {
-  phone: string
+  // One of phone or lid will be populated. phone is a real +E164 number;
+  // lid is an opaque WhatsApp Linked ID with no phone mapping.
+  phone: string | null
+  lid: string | null
   waName: string | null
   avatarDataUrl: string | null
 }
@@ -154,16 +163,18 @@ const api = {
       ipcRenderer.invoke('contact:logInteraction', input),
     addValueLog: (input: AddValueLogInput): Promise<WriteResult> =>
       ipcRenderer.invoke('contact:addValueLog', input),
-    briefsByPhones: (
-      phones: string[],
+    briefsForParticipants: (
+      participants: Array<{ phone: string | null; lid: string | null; waName: string | null }>,
     ): Promise<Record<string, ContactBrief | null>> =>
-      ipcRenderer.invoke('contact:briefsByPhones', phones),
+      ipcRenderer.invoke('contact:briefsForParticipants', participants),
     searchByName: (query: string): Promise<ContactBrief[]> =>
       ipcRenderer.invoke('contact:searchByName', query),
     createFromParticipant: (input: CreateContactInput): Promise<CreateContactResult> =>
       ipcRenderer.invoke('contact:createFromParticipant', input),
     attachPhone: (input: AttachPhoneInput): Promise<WriteResult> =>
       ipcRenderer.invoke('contact:attachPhone', input),
+    attachLid: (input: AttachLidInput): Promise<WriteResult> =>
+      ipcRenderer.invoke('contact:attachLid', input),
   },
   sidebar: {
     onContext: (cb: (ctx: SidebarContext) => void): void => {

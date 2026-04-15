@@ -9,6 +9,12 @@ import {
 } from '../lib/contact-helpers'
 import { MapParticipantModal } from './MapParticipantModal'
 
+function participantKey(p: GroupParticipant): string {
+  if (p.phone) return 'phone:' + p.phone
+  if (p.lid) return 'lid:' + p.lid
+  return 'unknown'
+}
+
 type Props = {
   groupName: string | null
   groupId: string
@@ -21,12 +27,17 @@ export function GroupScreen({ groupName, groupId, participants }: Props) {
   const [mappingTarget, setMappingTarget] = useState<GroupParticipant | null>(null)
   const [refreshTick, setRefreshTick] = useState(0)
 
-  // Fetch briefs for all participants (batch)
+  // Fetch briefs for all participants (batch) — now includes LID participants
+  // which are resolved via stored LID channels or name fallback.
   useEffect(() => {
     let cancelled = false
     setLoading(true)
-    const phones = participants.map((p) => p.phone)
-    window.conv.contact.briefsByPhones(phones).then((data) => {
+    const input = participants.map((p) => ({
+      phone: p.phone,
+      lid: p.lid,
+      waName: p.waName,
+    }))
+    window.conv.contact.briefsForParticipants(input).then((data) => {
       if (!cancelled) {
         setBriefs(data)
         setLoading(false)
@@ -41,7 +52,7 @@ export function GroupScreen({ groupName, groupId, participants }: Props) {
     const matched: Array<{ participant: GroupParticipant; brief: ContactBrief }> = []
     const unmapped: GroupParticipant[] = []
     for (const p of participants) {
-      const b = briefs[p.phone]
+      const b = briefs[participantKey(p)]
       if (b) matched.push({ participant: p, brief: b })
       else unmapped.push(p)
     }
@@ -133,6 +144,8 @@ function ParticipantRow({
   const avatar = brief.profile_photo_url ?? participant.avatarDataUrl
 
   async function handleDm() {
+    // DM only works when we have a real phone; LIDs can't navigate to 1-1.
+    if (!participant.phone) return
     await window.conv.wa.navigateToDm(participant.phone)
   }
 
@@ -170,9 +183,11 @@ function ParticipantRow({
           >
             + Value
           </button>
-          <button className="tiny-action" title="Private DM" onClick={handleDm}>
-            💬 DM
-          </button>
+          {participant.phone && (
+            <button className="tiny-action" title="Private DM" onClick={handleDm}>
+              💬 DM
+            </button>
+          )}
         </div>
 
         {openAction === 'log' && (
@@ -209,10 +224,14 @@ function UnmappedParticipantRow({
   participant: GroupParticipant
   onAdd: () => void
 }) {
-  const display = participant.waName ?? participant.phone
+  const display = participant.waName ?? participant.phone ?? 'Unknown'
   const avatar = participant.avatarDataUrl
+  const isLidOnly = !participant.phone && !!participant.lid
+  // For LIDs, don't show the opaque numeric ID as a "phone" subtitle.
+  const subtitle = participant.phone ?? (isLidOnly ? 'WhatsApp LID' : '—')
 
   async function handleDm() {
+    if (!participant.phone) return
     await window.conv.wa.navigateToDm(participant.phone)
   }
 
@@ -227,14 +246,16 @@ function UnmappedParticipantRow({
       </div>
       <div className="participant-info">
         <div className="participant-name">{display}</div>
-        <div className="participant-subtitle">{participant.phone}</div>
+        <div className="participant-subtitle">{subtitle}</div>
         <div className="participant-actions">
           <button className="tiny-action primary" onClick={onAdd}>
-            + Add to reThink
+            {isLidOnly ? '+ Link to reThink' : '+ Add to reThink'}
           </button>
-          <button className="tiny-action" onClick={handleDm}>
-            💬 DM
-          </button>
+          {participant.phone && (
+            <button className="tiny-action" onClick={handleDm}>
+              💬 DM
+            </button>
+          )}
         </div>
       </div>
     </li>

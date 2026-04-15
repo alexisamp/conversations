@@ -420,6 +420,209 @@ async function addValueLog(input: AddValueLogInput): Promise<WriteResult> {
 const BRIEF_COLUMNS =
   'id, name, job_title, company, profile_photo_url, tier, last_interaction_at, status, linkedin_url'
 
+export type ParticipantLookupInput = {
+  phone: string | null
+  lid: string | null
+  waName: string | null
+}
+
+/**
+ * Batch-resolve a list of group participants (mix of phones and LIDs) to
+ * reThink contact briefs.
+ *
+ * Strategy:
+ *   1. For participants with a phone, use the normal phone-variant lookup
+ *      (contact_channels ∪ contact_phone_mappings ∪ outreach_logs.phone).
+ *   2. For LID-only participants, fall back to a name ILIKE search against
+ *      outreach_logs.name using waName. If exactly one hit, we use it.
+ *      Multiple hits → ambiguous, treated as unmapped. Zero → unmapped.
+ *
+ * The result is keyed by a synthetic participant key:
+ *   "phone:+18573900458"  or  "lid:244482926760154"
+ * so the caller (GroupScreen) can tell matched from unmatched regardless
+ * of which identifier it happened to carry.
+ */
+export function participantKey(p: {
+  phone: string | null
+  lid: string | null
+}): string {
+  if (p.phone) return 'phone:' + p.phone
+  if (p.lid) return 'lid:' + p.lid
+  return 'unknown'
+}
+
+async function getContactBriefsForParticipants(
+  participants: ParticipantLookupInput[],
+): Promise<Record<string, ContactBrief | null>> {
+  const result: Record<string, ContactBrief | null> = {}
+  if (participants.length === 0) return result
+  for (const p of participants) result[participantKey(p)] = null
+
+  const supabase = getSupabase()
+
+  // ── Phone batch (same as before, but scoped to phone-bearing participants) ──
+  const phoneParticipants = participants.filter((p) => p.phone)
+  if (phoneParticipants.length > 0) {
+    const allVariants = new Set<string>()
+    const phoneToVariants = new Map<string, string[]>()
+    for (const p of phoneParticipants) {
+      const v = phoneVariants(p.phone!)
+      phoneToVariants.set(p.phone!, v)
+      for (const x of v) allVariants.add(x)
+    }
+    const variantsArr = Array.from(allVariants)
+
+    const [channelsRes, mappingsRes, directRes] = await Promise.all([
+      supabase
+        .from('contact_channels')
+        .select('outreach_log_id, channel_identifier')
+        .eq('channel', 'whatsapp')
+        .in('channel_identifier', variantsArr),
+      supabase
+        .from('contact_phone_mappings')
+        .select('contact_id, phone_number')
+        .in('phone_number', variantsArr),
+      supabase.from('outreach_logs').select('id, phone').in('phone', variantsArr),
+    ])
+
+    const variantToContactId = new Map<string, string>()
+    for (const row of (channelsRes.data ?? []) as Array<{
+      outreach_log_id: string
+      channel_identifier: string
+    }>) {
+      variantToContactId.set(row.channel_identifier, row.outreach_log_id)
+    }
+    for (const row of (mappingsRes.data ?? []) as Array<{
+      contact_id: string
+      phone_number: string
+    }>) {
+      if (!variantToContactId.has(row.phone_number)) {
+        variantToContactId.set(row.phone_number, row.contact_id)
+      }
+    }
+    for (const row of (directRes.data ?? []) as Array<{
+      id: string
+      phone: string | null
+    }>) {
+      if (row.phone && !variantToContactId.has(row.phone)) {
+        variantToContactId.set(row.phone, row.id)
+      }
+    }
+
+    const phoneToContactId = new Map<string, string>()
+    const contactIdsFromPhones = new Set<string>()
+    for (const [phone, variants] of phoneToVariants) {
+      for (const v of variants) {
+        const id = variantToContactId.get(v)
+        if (id) {
+          phoneToContactId.set(phone, id)
+          contactIdsFromPhones.add(id)
+          break
+        }
+      }
+    }
+
+    if (contactIdsFromPhones.size > 0) {
+      const { data: briefs } = await supabase
+        .from('outreach_logs')
+        .select(BRIEF_COLUMNS)
+        .in('id', Array.from(contactIdsFromPhones))
+      const briefsById = new Map<string, ContactBrief>()
+      for (const b of (briefs ?? []) as ContactBrief[]) briefsById.set(b.id, b)
+      for (const [phone, contactId] of phoneToContactId) {
+        const brief = briefsById.get(contactId)
+        if (brief) result['phone:' + phone] = brief
+      }
+
+      // Also store the channel identifier of the LID-less contacts we just
+      // found so that if some LID-only participant has the SAME contact_id
+      // (user previously merged them), we can match it via contact_channels.
+      // (Noop here — handled in LID pass below.)
+    }
+  }
+
+  // ── LID pass: two-stage resolution ──
+  // LIDs are opaque WhatsApp identifiers with no DOM-accessible phone mapping.
+  // We store previously-linked LIDs in contact_channels with the identifier
+  // prefixed "lid:" so a persistent map-once lookup works on subsequent
+  // sightings. For first-time LIDs we fall back to an unambiguous name search.
+  const lidParticipants = participants.filter((p) => !p.phone && p.lid)
+  if (lidParticipants.length > 0) {
+    const lidKeys = lidParticipants.map((p) => 'lid:' + p.lid!)
+
+    // Stage 1: contact_channels stored LID identifiers
+    const { data: lidChannels } = await supabase
+      .from('contact_channels')
+      .select('outreach_log_id, channel_identifier')
+      .eq('channel', 'whatsapp')
+      .in('channel_identifier', lidKeys)
+
+    const lidToContactId = new Map<string, string>()
+    for (const row of (lidChannels ?? []) as Array<{
+      outreach_log_id: string
+      channel_identifier: string
+    }>) {
+      // channel_identifier is 'lid:<value>', strip prefix to key by raw LID
+      const lid = row.channel_identifier.replace(/^lid:/, '')
+      lidToContactId.set(lid, row.outreach_log_id)
+    }
+
+    const lidContactIds = new Set(lidToContactId.values())
+    const lidBriefsById = new Map<string, ContactBrief>()
+    if (lidContactIds.size > 0) {
+      const { data: briefs } = await supabase
+        .from('outreach_logs')
+        .select(BRIEF_COLUMNS)
+        .in('id', Array.from(lidContactIds))
+      for (const b of (briefs ?? []) as ContactBrief[]) {
+        lidBriefsById.set(b.id, b)
+      }
+    }
+
+    // Stage 2: for LIDs without a stored mapping, try unambiguous name search
+    const needsNameSearch = lidParticipants.filter(
+      (p) => !lidToContactId.has(p.lid!) && p.waName && p.waName.length >= 2,
+    )
+    const nameHits = new Map<string, ContactBrief>()
+    const nameAmbiguous = new Set<string>()
+    if (needsNameSearch.length > 0) {
+      const namesToSearch = new Set(needsNameSearch.map((p) => p.waName!))
+      await Promise.all(
+        Array.from(namesToSearch).map(async (name) => {
+          const { data } = await supabase
+            .from('outreach_logs')
+            .select(BRIEF_COLUMNS)
+            .ilike('name', `%${name}%`)
+            .limit(2)
+          const rows = (data as ContactBrief[] | null) ?? []
+          if (rows.length === 1) nameHits.set(name, rows[0])
+          else if (rows.length > 1) nameAmbiguous.add(name)
+        }),
+      )
+    }
+
+    // Assign LID results
+    for (const p of lidParticipants) {
+      const key = 'lid:' + p.lid!
+      const mappedId = lidToContactId.get(p.lid!)
+      if (mappedId) {
+        const brief = lidBriefsById.get(mappedId)
+        if (brief) result[key] = brief
+        continue
+      }
+      if (p.waName) {
+        const hit = nameHits.get(p.waName)
+        if (hit && !nameAmbiguous.has(p.waName)) {
+          result[key] = hit
+        }
+      }
+    }
+  }
+
+  return result
+}
+
+/** @deprecated use getContactBriefsForParticipants. Kept for backward compat. */
 async function getContactBriefsByPhones(
   phones: string[],
 ): Promise<Record<string, ContactBrief | null>> {
@@ -624,6 +827,31 @@ async function attachPhoneToExistingContact(input: {
   return { ok: true }
 }
 
+async function attachLidToExistingContact(input: {
+  contact_id: string
+  lid: string
+  waName: string | null
+}): Promise<WriteResult> {
+  // Store the LID with a "lid:" prefix so it coexists cleanly with phone
+  // identifiers in the same channel_identifier column. This is the
+  // "map once, automatic forever" mechanism for group participants who
+  // only expose a Linked ID and not a phone number.
+  const supabase = getSupabase()
+  const storedIdentifier = 'lid:' + input.lid
+  const { error } = await supabase.from('contact_channels').insert({
+    outreach_log_id: input.contact_id,
+    channel: 'whatsapp',
+    channel_identifier: storedIdentifier,
+    channel_name: input.waName,
+    verified: true,
+  })
+  if (error) {
+    console.error('[contacts] attachLid failed:', error)
+    return { ok: false, error: error.message }
+  }
+  return { ok: true }
+}
+
 // ─── IPC registration ────────────────────────────────────────────────────────
 
 export function registerContactIpc(): void {
@@ -638,6 +866,11 @@ export function registerContactIpc(): void {
   ipcMain.handle('contact:briefsByPhones', (_event, phones: string[]) =>
     getContactBriefsByPhones(phones),
   )
+  ipcMain.handle(
+    'contact:briefsForParticipants',
+    (_event, participants: ParticipantLookupInput[]) =>
+      getContactBriefsForParticipants(participants),
+  )
   ipcMain.handle('contact:searchByName', (_event, query: string) =>
     searchContactsByName(query),
   )
@@ -648,6 +881,11 @@ export function registerContactIpc(): void {
     'contact:attachPhone',
     (_event, input: { contact_id: string; phone: string; waName: string | null }) =>
       attachPhoneToExistingContact(input),
+  )
+  ipcMain.handle(
+    'contact:attachLid',
+    (_event, input: { contact_id: string; lid: string; waName: string | null }) =>
+      attachLidToExistingContact(input),
   )
   ipcMain.handle('contact:byLinkedinUrl', (_event, url: string) =>
     findContactByLinkedinUrl(url),

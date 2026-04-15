@@ -16,7 +16,12 @@ import { ipcRenderer } from 'electron'
 const POLL_INTERVAL_MS = 600
 
 type Participant = {
-  phone: string
+  // Exactly one of phone or lid is populated:
+  //   - phone: sender identified by @c.us (real phone number, +E164 format)
+  //   - lid:   sender identified by @lid  (opaque WhatsApp Linked ID; can't be
+  //            looked up by phone, needs name-based fallback in the backend)
+  phone: string | null
+  lid: string | null
   waName: string | null
   avatarDataUrl: string | null
 }
@@ -50,16 +55,20 @@ function firstChatSegment(dataId: string): string | null {
   return null
 }
 
-function lastSenderPhone(dataId: string): string | null {
-  // Group message data-ids carry the sender as a trailing "_PHONE@c.us"
-  // or "_PHONE@lid" segment. "@lid" is the newer "Linked ID" format that
-  // WhatsApp rolled out — older code only checked "@c.us" and missed it.
-  // We look at any "DIGITS@(c.us|lid)" segment, prefer the LAST one, and
-  // skip group-id segments (which live in "@g.us").
-  const matches = Array.from(dataId.matchAll(/(\d+)@(?:c\.us|lid)/g))
+function lastSenderIdentity(
+  dataId: string,
+): { phone: string } | { lid: string } | null {
+  // Group message data-ids carry the sender as a trailing segment. Two
+  // formats coexist in modern WhatsApp:
+  //   - "…_18573900458@c.us" — real phone number (legacy)
+  //   - "…_244482926760154@lid" — Linked ID (newer, opaque)
+  // Take the LAST matching segment (the group ID is earlier in the string).
+  const matches = Array.from(dataId.matchAll(/(\d+)@(c\.us|lid)/g))
   if (matches.length === 0) return null
   const last = matches[matches.length - 1]
-  return last[1]
+  const value = last[1]
+  const suffix = last[2]
+  return suffix === 'c.us' ? { phone: value } : { lid: value }
 }
 
 function getActiveChatIdentity(): ChatIdentity {
@@ -108,10 +117,10 @@ function extractWaNameFromMessageEl(msg: Element): string | null {
   return match ? match[1].trim() : null
 }
 
-function captureAvatarFor(phone: string): string | null {
-  if (avatarCache.has(phone)) return avatarCache.get(phone)!
+function captureAvatarFor(identifier: string): string | null {
+  if (avatarCache.has(identifier)) return avatarCache.get(identifier)!
   // Look for messages whose data-id ends with this participant's @c.us or @lid suffix.
-  const selector = `[data-id$="_${phone}@c.us"], [data-id$="_${phone}@lid"]`
+  const selector = `[data-id$="_${identifier}@c.us"], [data-id$="_${identifier}@lid"]`
   const messages = Array.from(document.querySelectorAll(selector))
   for (const msg of messages) {
     // The avatar is usually an <img> inside or beside the message row.
@@ -128,7 +137,7 @@ function captureAvatarFor(phone: string): string | null {
           if (!ctx) break
           ctx.drawImage(img, 0, 0)
           const url = canvas.toDataURL('image/jpeg', 0.7)
-          avatarCache.set(phone, url)
+          avatarCache.set(identifier, url)
           return url
         } catch {
           // Tainted canvas (CORS). Give up for this participant.
@@ -146,12 +155,26 @@ function getGroupParticipants(): Participant[] {
   const seen = new Map<string, Participant>()
   for (const msg of Array.from(messages)) {
     const dataId = msg.getAttribute('data-id') ?? ''
-    const phone = lastSenderPhone(dataId)
-    if (!phone) continue
-    if (seen.has(phone)) continue
+    // Only take messages FROM others (false_...), not ones we sent
+    // (true_...); our own outgoing messages in groups shouldn't make us
+    // appear as a participant of that group in the sidebar.
+    if (!dataId.startsWith('false_')) continue
+    const identity = lastSenderIdentity(dataId)
+    if (!identity) continue
+
+    // Dedupe key: use the phone/lid string itself so duplicates collapse.
+    const key = 'phone' in identity ? 'phone:' + identity.phone : 'lid:' + identity.lid
+    if (seen.has(key)) continue
+
     const waName = extractWaNameFromMessageEl(msg)
-    const avatarDataUrl = captureAvatarFor(phone)
-    seen.set(phone, { phone: '+' + phone, waName, avatarDataUrl })
+    const rawId = 'phone' in identity ? identity.phone : identity.lid
+    const avatarDataUrl = captureAvatarFor(rawId)
+    seen.set(key, {
+      phone: 'phone' in identity ? '+' + identity.phone : null,
+      lid: 'lid' in identity ? identity.lid : null,
+      waName,
+      avatarDataUrl,
+    })
   }
   return Array.from(seen.values())
 }
@@ -186,8 +209,11 @@ function tick(): void {
       console.warn('[wa-preload] group but 0 participants. samples:', samples)
     }
 
-    const phones = participants.map((p) => p.phone).sort().join(',')
-    signature = 'group:' + identity.groupId + '|' + phones
+    const keys = participants
+      .map((p) => (p.phone ?? '') + '|' + (p.lid ?? ''))
+      .sort()
+      .join(',')
+    signature = 'group:' + identity.groupId + '|' + keys
     if (signature !== currentSignature) {
       currentSignature = signature
       const name = getChatNameFromDom()
