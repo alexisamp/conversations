@@ -21,6 +21,8 @@ type LinkedinProfile = {
 
 let currentKey: string | null = null
 let started = false
+// Dedupe the one-shot photo DOM diagnostic so we only dump once per profile.
+const diagnosedProfiles = new Set<string>()
 
 function normalizeProfileUrl(raw: string): { url: string; slug: string } | null {
   const match = raw.match(/linkedin\.com\/in\/([^/?#&]+)/)
@@ -174,9 +176,59 @@ function scrapeAbout(): string | null {
   return null
 }
 
-function scrapePhotoUrl(): string | null {
+function diagnosePhotoDom(slug: string): void {
+  // Runs once per slug. Dumps every <img> in <main> plus any element with
+  // an inline background-image URL, so we can see what the DOM actually
+  // looks like inside Electron's WebContentsView (which may differ from
+  // a Chrome content script for LinkedIn's SPA).
+  if (diagnosedProfiles.has(slug)) return
+  diagnosedProfiles.add(slug)
+
+  const report: Record<string, unknown> = {}
+  const mains = document.querySelectorAll('main')
+  report.mainCount = mains.length
+  report.totalImgs = document.querySelectorAll('img').length
+
+  const mainEl = mains[0] as HTMLElement | undefined
+  if (mainEl) {
+    const imgs = Array.from(mainEl.querySelectorAll<HTMLImageElement>('img'))
+    report.mainImgCount = imgs.length
+    report.mainImgs = imgs.slice(0, 15).map((img) => ({
+      src: (img.src || '').slice(0, 120),
+      dataDelayedUrl: (img.getAttribute('data-delayed-url') || '').slice(0, 120),
+      dataGhostUrl: (img.getAttribute('data-ghost-url') || '').slice(0, 120),
+      alt: img.getAttribute('alt') || '',
+      className: (img.className || '').toString().slice(0, 100),
+      parentCls: (img.parentElement?.className || '').toString().slice(0, 100),
+      w: img.naturalWidth,
+      h: img.naturalHeight,
+    }))
+
+    // Also check for background-image on divs — LinkedIn sometimes renders
+    // photos via CSS background instead of <img> tags.
+    const bgCandidates: Array<{ cls: string; bg: string }> = []
+    const divs = mainEl.querySelectorAll<HTMLElement>(
+      'div[style*="background"], section[style*="background"]',
+    )
+    for (const d of Array.from(divs).slice(0, 10)) {
+      const style = d.getAttribute('style') || ''
+      const m = style.match(/url\(["']?([^"')]+)["']?\)/)
+      if (m) {
+        bgCandidates.push({
+          cls: d.className.toString().slice(0, 80),
+          bg: m[1].slice(0, 120),
+        })
+      }
+    }
+    report.bgImages = bgCandidates
+  }
+
+  console.log('[li-preload] photo-dom-diagnostic', JSON.stringify(report))
+}
+
+function scrapePhotoUrl(slug: string): string | null {
   // Ported directly from reThink-2026/extension/src/content-scripts/linkedin-profile.ts
-  // which is known to work across WhatsApp^W LinkedIn releases.
+  // which is known to work across LinkedIn releases.
   //
   // Two critical details:
   //   1. Only scan <main>. The logged-in user's own avatar lives in the nav
@@ -189,6 +241,11 @@ function scrapePhotoUrl(): string | null {
   // The distinguishing URL fragment is "profile-displayphoto" (the profile
   // photo) vs "profile-displaybackgroundimage" (the cover banner). We
   // strongly prefer the former, fall back to any licdn dms/image inside main.
+  //
+  // On each first scrape for a profile we also dump a one-shot DOM diagnostic
+  // so we can see what LinkedIn actually renders inside Electron.
+  diagnosePhotoDom(slug)
+
   function readUrl(img: HTMLImageElement): string | null {
     const url =
       img.src ||
@@ -209,10 +266,13 @@ function scrapePhotoUrl(): string | null {
     if (url && url.indexOf('profile-displayphoto') !== -1) return url
   }
 
-  // Step 2: fallback to any media.licdn.com/dms/image inside main
+  // Step 2: fallback to any media.licdn.com/dms/image inside main — but
+  // explicitly exclude backgroundimage paths so we don't pick up the banner.
   for (const img of imgs) {
     const url = readUrl(img)
-    if (url && url.indexOf('media.licdn.com/dms/image') !== -1) return url
+    if (!url || url.indexOf('media.licdn.com/dms/image') === -1) continue
+    if (url.indexOf('displaybackgroundimage') !== -1) continue
+    return url
   }
 
   return null
@@ -269,7 +329,7 @@ function tick(): void {
     const jobTitle = scrapeJobTitle()
     const location = scrapeLocation()
     const about = scrapeAbout()
-    const photoUrl = scrapePhotoUrl()
+    const photoUrl = scrapePhotoUrl(parsed.slug)
     const avatarDataUrl = scrapeAvatar()
     const profile: LinkedinProfile = {
       url: parsed.url,
