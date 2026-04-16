@@ -858,6 +858,17 @@ function registerIpc(): void {
     }
   })
 
+  // Invalidate the phone→contactId cache after a contact is created or
+  // mapped from the sidebar. Without this, messages arriving after the
+  // creation would still use the stale null cache entry and sessions would
+  // remain unmapped.
+  ipcMain.on('main:invalidatePhoneCache', (_event, phone: string) => {
+    if (phone) {
+      phoneContactIdCache.delete(phone)
+      console.log('[main] invalidated phone cache for', phone)
+    }
+  })
+
   // Search overlay
   ipcMain.on('overlay:hide', () => hideSearchOverlay())
   ipcMain.on('overlay:submit', (_event, query: string) => {

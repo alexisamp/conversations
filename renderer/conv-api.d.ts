@@ -195,6 +195,7 @@ export type ConvApi = {
   }
   wa: {
     navigateToDm(phone: string): Promise<{ ok: boolean; error?: string }>
+    invalidatePhoneCache(phone: string): void
   }
   li: {
     navigate(url: string): Promise<{ ok: boolean; error?: string }>

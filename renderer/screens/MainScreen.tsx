@@ -2,7 +2,8 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { ContactDetailScreen } from './ContactDetailScreen'
 import { GroupScreen } from './GroupScreen'
 import { LinkedinProfileScreen } from './LinkedinProfileScreen'
-import type { ContactDetail, SidebarContext } from '../conv-api'
+import { MapParticipantModal } from './MapParticipantModal'
+import type { ContactDetail, GroupParticipant, SidebarContext } from '../conv-api'
 
 type PersonLookupState =
   | { kind: 'idle' }
@@ -146,11 +147,11 @@ function Body({
     }
     if (personLookup.kind === 'not-found') {
       return (
-        <div className="empty">
-          <strong>Not in reThink</strong>
-          <div className="muted">{personLookup.waName ?? personLookup.phone}</div>
-          <div className="muted small">{personLookup.phone}</div>
-        </div>
+        <PersonNotFound
+          phone={personLookup.phone}
+          waName={personLookup.waName}
+          onCreated={() => onRefreshPerson()}
+        />
       )
     }
     if (personLookup.kind === 'error') {
@@ -179,4 +180,63 @@ function Body({
     )
   }
   return <LinkedinProfileScreen state={context.state} />
+}
+
+// ─── Not-found card with "Add to reThink" ──────────────────────────
+
+function PersonNotFound({
+  phone,
+  waName,
+  onCreated,
+}: {
+  phone: string
+  waName: string | null
+  onCreated: () => void
+}) {
+  const [showModal, setShowModal] = useState(false)
+
+  // Build a virtual GroupParticipant so we can reuse MapParticipantModal
+  const participant: GroupParticipant = {
+    phone,
+    lid: null,
+    waName,
+    avatarDataUrl: null,
+  }
+
+  function handleDone() {
+    setShowModal(false)
+    // Invalidate the phone→contactId cache in the main process so
+    // the next WA message picks up the new contactId and sessions
+    // get properly linked.
+    window.conv.wa.invalidatePhoneCache(phone)
+    onCreated()
+  }
+
+  return (
+    <div className="not-found-card">
+      <div className="not-found-header">
+        <div className="not-found-name">{waName ?? phone}</div>
+        <div className="not-found-phone">{phone}</div>
+      </div>
+      <div className="not-found-body">
+        <strong>Not in reThink</strong>
+        <div className="muted small">
+          Add this contact to start tracking interactions and health score.
+        </div>
+        <button
+          className="not-found-add-btn"
+          onClick={() => setShowModal(true)}
+        >
+          + Add to reThink
+        </button>
+      </div>
+      {showModal && (
+        <MapParticipantModal
+          participant={participant}
+          onClose={() => setShowModal(false)}
+          onDone={handleDone}
+        />
+      )}
+    </div>
+  )
 }

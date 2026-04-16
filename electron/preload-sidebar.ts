@@ -212,6 +212,9 @@ const api = {
   wa: {
     navigateToDm: (phone: string): Promise<{ ok: boolean; error?: string }> =>
       ipcRenderer.invoke('wa:navigate-to-dm', phone),
+    invalidatePhoneCache: (phone: string): void => {
+      ipcRenderer.send('main:invalidatePhoneCache', phone)
+    },
   },
   li: {
     navigate: (url: string): Promise<{ ok: boolean; error?: string }> =>
