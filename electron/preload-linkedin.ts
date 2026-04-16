@@ -31,108 +31,201 @@ function normalizeProfileUrl(raw: string): { url: string; slug: string } | null 
   return { url: `https://www.linkedin.com/in/${slug}`, slug }
 }
 
+function cleanNameText(raw: string): string | null {
+  // LinkedIn h1 sometimes has suffixes like '· 3rd+' or '| Open to work'.
+  // Strip them and take only the first line / first segment.
+  const text = raw
+    .split(/\n/)[0]
+    .split(/\s*[|·•]\s*/)[0]
+    .replace(/\s+/g, ' ')
+    .trim()
+  if (text && text.length >= 2 && text.length < 80) return text
+  return null
+}
+
 function scrapeName(): string | null {
   const nameSelectors = [
-    'h1.text-heading-xlarge',
-    'h1[class*="text-heading"]',
-    'h1.t-24',
-    'h1.t-bold',
+    'main h1.text-heading-xlarge',
+    'main h1.inline',
+    'main h1[class*="text-heading"]',
+    'main h1.t-24',
+    'main h1.t-bold',
     '.pv-top-card h1',
     '.ph5 h1',
+    'main section h1',
     'main h1',
-    'h1',
   ]
   for (const sel of nameSelectors) {
     const el = document.querySelector(sel) as HTMLElement | null
     if (!el) continue
-    const text = el.innerText?.trim()
-    if (!text || text.length < 2 || text.length > 80) continue
-    if (text.includes('|') || text.includes('·')) continue
-    return text
+    const text = cleanNameText(el.innerText ?? '')
+    if (text) return text
+  }
+
+  // Fallback 1: any heading-role element inside main
+  const headingRoles = document.querySelectorAll<HTMLElement>('main [role="heading"]')
+  for (const el of Array.from(headingRoles)) {
+    const text = cleanNameText(el.innerText ?? '')
+    if (text) return text
+  }
+
+  // Fallback 2: structural walk from the profile photo. We know the photo
+  // matches profile-displayphoto — walk up a few ancestors and look for
+  // the first text block that looks like a personal name (2-4 words,
+  // not all lowercase, reasonable length).
+  const mainEl = document.querySelector('main')
+  if (mainEl) {
+    const imgs = Array.from(mainEl.querySelectorAll<HTMLImageElement>('img'))
+    const photoImg = imgs.find((img) => {
+      const src = img.src || img.getAttribute('data-delayed-url') || ''
+      return src.includes('profile-displayphoto')
+    })
+    if (photoImg) {
+      let container: HTMLElement | null = photoImg.parentElement
+      for (let depth = 0; depth < 6 && container; depth++) {
+        // Try any text-bearing element in this ancestor that isn't a button
+        // or link and has a name-like shape.
+        const candidates = container.querySelectorAll<HTMLElement>('h1, h2, h3, span, div')
+        for (const el of Array.from(candidates)) {
+          if (el.children.length > 3) continue
+          if (el.querySelector('button, a')) continue
+          const text = cleanNameText(el.innerText ?? '')
+          if (!text) continue
+          // Name-likeness: 2-4 words, at least one uppercase letter
+          const words = text.split(/\s+/)
+          if (words.length < 2 || words.length > 5) continue
+          if (!/[A-Z]/.test(text)) continue
+          return text
+        }
+        container = container.parentElement
+      }
+    }
+  }
+
+  // Last resort: anywhere on the page
+  const anyH1 = document.querySelector('h1') as HTMLElement | null
+  if (anyH1) {
+    const text = cleanNameText(anyH1.innerText ?? '')
+    if (text) return text
   }
   return null
 }
 
 function scrapeJobTitle(): string | null {
-  // LinkedIn's class names are obfuscated and shift frequently. Try a stack
-  // of selectors in descending order of reliability, then fall back to a
-  // structural walk from the h1.
-  const selectors = [
-    '[data-generated-suggestion-target]',
-    '.pv-text-details__right-panel .text-body-medium',
-    '.pv-top-card-v2-ctas + .text-body-medium',
-    '.ph5 .text-body-medium.break-words',
-    'main section .text-body-medium.break-words',
-    '.text-body-medium.break-words',
-    'main .pv-top-card .text-body-medium',
-    'main .text-body-medium',
-  ]
-  for (const sel of selectors) {
-    const el = document.querySelector(sel) as HTMLElement | null
-    if (!el) continue
-    const text = el.innerText?.trim()
-    if (!text || text.length < 2 || text.length > 200) continue
-    // Skip obvious false positives (multi-line, weird patterns)
-    if (text.includes('\n')) continue
-    return text
-  }
-
-  // Structural fallback: walk up from the h1 that holds the name and look
-  // for the first text element right below it that isn't the name itself
-  // and isn't a nested button/link container.
-  const h1 = document.querySelector('main h1') as HTMLElement | null
-  if (h1) {
-    const name = h1.innerText?.trim() ?? ''
-    let container: HTMLElement | null = h1.parentElement
-    for (let depth = 0; depth < 4 && container; depth++) {
-      const candidates = container.querySelectorAll<HTMLElement>('div, span, p')
-      for (const el of Array.from(candidates)) {
-        const text = el.innerText?.trim() ?? ''
-        if (!text || text === name) continue
-        if (text.length < 5 || text.length > 200) continue
-        if (text.includes('\n')) continue
-        if (el.querySelector('button, a, h1')) continue
-        if (el.children.length > 2) continue
-        return text
-      }
-      container = container.parentElement
+  // The headline is the FIRST substantive text block in the top card after
+  // the name. It's longer than a location (no comma + city) and longer
+  // than "X followers". We use getTopCardTextBlocks() which already skips
+  // the name, degree markers, and button labels.
+  const blocks = getTopCardTextBlocks()
+  for (const b of blocks) {
+    const t = b.text
+    // Skip location-like (comma inside, single title-case word)
+    if (/followers$|connections$/i.test(t)) continue
+    if (t.length < 5 || t.length > 220) continue
+    // Skip short all-title-case blocks (those are locations / countries)
+    const words = t.split(/\s+/)
+    if (words.length <= 3) {
+      const allTitleCase = words.every((w) => /^[A-Z][a-zA-Z]*$/.test(w))
+      if (allTitleCase && !t.includes(' at ')) continue
     }
+    // Found the headline
+    return t
   }
-
   return null
 }
 
-function scrapeLocation(): string | null {
-  // Location sits under the headline in the top card. It's usually in a
-  // smaller gray text block with the pattern "City, Region, Country".
-  const selectors = [
-    '.pv-text-details__left-panel .text-body-small:not(.inline)',
-    '.ph5 .text-body-small.inline.t-black--light.break-words',
-    '.pv-text-details__left-panel span.text-body-small',
-    '.pv-top-card .text-body-small.inline',
-  ]
-  for (const sel of selectors) {
-    const el = document.querySelector(sel) as HTMLElement | null
-    if (!el) continue
-    const text = el.innerText?.trim()
-    if (!text || text.length < 3 || text.length > 150) continue
-    // A location usually contains a comma and no pipe/bullet
-    if (!text.includes(',')) continue
-    if (text.includes('|') || text.includes('·')) continue
-    return text
+// ─── Top-card text extraction ─────────────────────────────────────────
+//
+// LinkedIn's profile top card obfuscates every class name but the
+// structural shape is stable: a container near the profile photo holds the
+// name, headline, current-company line, location, and follower count as a
+// series of short text elements (mostly <p> tags in current releases).
+//
+// We anchor on the profile-displayphoto img, walk up 3-6 ancestors until we
+// find a container that holds the name too, then collect the <p>/<span>
+// text blocks inside it in DOM order. Junk (degree indicators, "Contact
+// info", button labels) is filtered out. The consumer picks which block is
+// the headline / location / company by position + pattern.
+
+type TopCardBlock = { text: string }
+
+function isJunkTopCardText(text: string): boolean {
+  const t = text.trim()
+  if (!t) return true
+  if (t.length < 2 || t.length > 300) return true
+  if (/^·\s*(1st|2nd|3rd|3\+|Following)/i.test(t)) return true
+  if (/^(Contact info|Message|Follow|Connect|More|\+ Follow)$/i.test(t)) return true
+  if (/^\d+(st|nd|rd|th)\+?$/i.test(t)) return true
+  return false
+}
+
+function getTopCardTextBlocks(): TopCardBlock[] {
+  const mainEl = document.querySelector('main')
+  if (!mainEl) return []
+  const imgs = Array.from(mainEl.querySelectorAll<HTMLImageElement>('img'))
+  const photoImg = imgs.find((img) => {
+    const s = img.src || img.getAttribute('data-delayed-url') || ''
+    return s.includes('profile-displayphoto')
+  })
+  if (!photoImg) return []
+
+  // Walk up from the photo until we find a container that also contains
+  // the person's name.
+  const name = scrapeName()
+  let container: HTMLElement | null = photoImg.parentElement
+  let topCard: HTMLElement | null = null
+  for (let i = 0; i < 8 && container; i++) {
+    if (name && container.innerText?.includes(name)) {
+      topCard = container
+      break
+    }
+    container = container.parentElement
   }
-  // Structural fallback: small-text block near h1 that has a comma and ends
-  // near a "Contact info" link.
-  const contactInfo = Array.from(document.querySelectorAll('a, button')).find(
-    (el) => ((el as HTMLElement).innerText?.trim().toLowerCase() ?? '') === 'contact info',
-  )
-  if (contactInfo) {
-    const container = contactInfo.parentElement
-    if (container) {
-      const siblings = container.querySelectorAll<HTMLElement>('span')
-      for (const s of Array.from(siblings)) {
-        const text = s.innerText?.trim() ?? ''
-        if (text.length > 5 && text.length < 150 && text.includes(',')) return text
+  if (!topCard) return []
+
+  // Only collect <p> tags. They're the atomic text elements LinkedIn uses
+  // for headline / current company / location / followers. Collecting divs
+  // or spans would include parent containers whose innerText is the
+  // concatenation of all their descendants — that's how we ended up with
+  // 'Lenny Rachitsky · 3rd Deeply researched…' in the job_title field.
+  const blocks: TopCardBlock[] = []
+  const seen = new Set<string>()
+  const elements = topCard.querySelectorAll<HTMLElement>('p')
+  for (const el of Array.from(elements)) {
+    const text = (el.innerText ?? '').trim().replace(/\s+/g, ' ')
+    if (isJunkTopCardText(text)) continue
+    if (text.includes('\n')) continue
+    if (seen.has(text)) continue
+    seen.add(text)
+    if (name && text === name) continue
+    blocks.push({ text })
+    if (blocks.length >= 20) break
+  }
+  return blocks
+}
+
+function scrapeLocation(): string | null {
+  const blocks = getTopCardTextBlocks()
+  // A location is short, has a comma OR is a common single-word
+  // country/region, and doesn't look like a headline.
+  for (const b of blocks) {
+    const t = b.text
+    if (t.length > 120) continue
+    if (/followers$|connections$/i.test(t)) continue
+    if (t.includes('|')) continue
+    // Locations usually contain "City, Region" or "City, Country"
+    if (t.includes(',')) return t
+    // Or a single well-known location word — rough heuristic: 1-3 words, all
+    // properly capitalized, no lowercase after first letter of each word.
+    const words = t.split(/\s+/)
+    if (words.length >= 1 && words.length <= 4) {
+      const allTitleCase = words.every((w) => /^[A-Z][a-zA-Z]*$/.test(w))
+      if (allTitleCase && t.length >= 4) {
+        // Make sure it's not the headline / job title (those are longer
+        // and more descriptive)
+        if (!/\bat\b|\bof\b|Head|Director|Engineer|Manager|Founder|CEO|CTO|CFO/i.test(t)) {
+          return t
+        }
       }
     }
   }
@@ -176,57 +269,54 @@ function scrapeAbout(): string | null {
   return null
 }
 
-function diagnosePhotoDom(slug: string): void {
-  // Runs once per slug. Dumps every <img> in <main> plus any element with
-  // an inline background-image URL, so we can see what the DOM actually
-  // looks like inside Electron's WebContentsView (which may differ from
-  // a Chrome content script for LinkedIn's SPA).
+function diagnosePhotoDom(slug: string, scrapedName: string | null): void {
+  // Runs ONCE per slug, gated on 'scrapeName returned something'. That's
+  // the most reliable 'DOM is ready' signal.
   if (diagnosedProfiles.has(slug)) return
+  if (!scrapedName) return
   diagnosedProfiles.add(slug)
 
   const report: Record<string, unknown> = {}
-  const mains = document.querySelectorAll('main')
-  report.mainCount = mains.length
-  report.totalImgs = document.querySelectorAll('img').length
-
-  const mainEl = mains[0] as HTMLElement | undefined
-  if (mainEl) {
-    const imgs = Array.from(mainEl.querySelectorAll<HTMLImageElement>('img'))
-    report.mainImgCount = imgs.length
-    report.mainImgs = imgs.slice(0, 15).map((img) => ({
-      src: (img.src || '').slice(0, 120),
-      dataDelayedUrl: (img.getAttribute('data-delayed-url') || '').slice(0, 120),
-      dataGhostUrl: (img.getAttribute('data-ghost-url') || '').slice(0, 120),
-      alt: img.getAttribute('alt') || '',
-      className: (img.className || '').toString().slice(0, 100),
-      parentCls: (img.parentElement?.className || '').toString().slice(0, 100),
-      w: img.naturalWidth,
-      h: img.naturalHeight,
-    }))
-
-    // Also check for background-image on divs — LinkedIn sometimes renders
-    // photos via CSS background instead of <img> tags.
-    const bgCandidates: Array<{ cls: string; bg: string }> = []
-    const divs = mainEl.querySelectorAll<HTMLElement>(
-      'div[style*="background"], section[style*="background"]',
-    )
-    for (const d of Array.from(divs).slice(0, 10)) {
-      const style = d.getAttribute('style') || ''
-      const m = style.match(/url\(["']?([^"')]+)["']?\)/)
-      if (m) {
-        bgCandidates.push({
-          cls: d.className.toString().slice(0, 80),
-          bg: m[1].slice(0, 120),
-        })
-      }
-    }
-    report.bgImages = bgCandidates
+  const mainEl = document.querySelector('main') as HTMLElement | null
+  if (!mainEl) {
+    report.error = 'no main'
+    console.log('[li-preload] li-dom-diagnostic', JSON.stringify(report))
+    return
   }
 
-  console.log('[li-preload] photo-dom-diagnostic', JSON.stringify(report))
+  report.mainImgCount = mainEl.querySelectorAll('img').length
+  report.scrapedName = scrapedName
+
+  // Flat dump of ALL short text elements inside main, in DOM order.
+  // Filter: 3-180 chars, leaf-ish (≤3 children), not a button/link, not
+  // containing another candidate. This gives us a linear picture of what
+  // the top card looks like so we can find the headline + location by
+  // pattern matching.
+  const allText = Array.from(mainEl.querySelectorAll<HTMLElement>('span, div, p, a, h1, h2'))
+  const seenTexts = new Set<string>()
+  const textBlocks: Array<{ tag: string; text: string; cls: string; aria: string }> = []
+  for (const el of allText) {
+    if (el.children.length > 3) continue
+    if (el.querySelector('button')) continue
+    const text = (el.innerText || '').trim().replace(/\n+/g, ' | ').slice(0, 150)
+    if (!text || text.length < 3 || text.length > 180) continue
+    // Dedupe identical strings (parent + child can carry the same text)
+    if (seenTexts.has(text)) continue
+    seenTexts.add(text)
+    textBlocks.push({
+      tag: el.tagName,
+      text,
+      cls: (el.className || '').toString().slice(0, 70),
+      aria: el.getAttribute('aria-label')?.slice(0, 50) || '',
+    })
+    if (textBlocks.length >= 40) break
+  }
+  report.textBlocks = textBlocks
+
+  console.log('[li-preload] li-dom-diagnostic', JSON.stringify(report))
 }
 
-function scrapePhotoUrl(slug: string): string | null {
+function scrapePhotoUrl(): string | null {
   // Ported directly from reThink-2026/extension/src/content-scripts/linkedin-profile.ts
   // which is known to work across LinkedIn releases.
   //
@@ -242,10 +332,6 @@ function scrapePhotoUrl(slug: string): string | null {
   // photo) vs "profile-displaybackgroundimage" (the cover banner). We
   // strongly prefer the former, fall back to any licdn dms/image inside main.
   //
-  // On each first scrape for a profile we also dump a one-shot DOM diagnostic
-  // so we can see what LinkedIn actually renders inside Electron.
-  diagnosePhotoDom(slug)
-
   function readUrl(img: HTMLImageElement): string | null {
     const url =
       img.src ||
@@ -326,10 +412,12 @@ function tick(): void {
   // (retries below), we re-emit with the enriched info.
   const emit = (source: string) => {
     const name = scrapeName()
+    // Fire the one-shot diagnostic once we have a name (DOM is hydrated).
+    diagnosePhotoDom(parsed.slug, name)
     const jobTitle = scrapeJobTitle()
     const location = scrapeLocation()
     const about = scrapeAbout()
-    const photoUrl = scrapePhotoUrl(parsed.slug)
+    const photoUrl = scrapePhotoUrl()
     const avatarDataUrl = scrapeAvatar()
     const profile: LinkedinProfile = {
       url: parsed.url,

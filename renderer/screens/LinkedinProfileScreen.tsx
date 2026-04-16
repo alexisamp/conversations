@@ -137,12 +137,13 @@ export function LinkedinProfileScreen({ state }: Props) {
   }
 
   // not-found → show preview + create button
+  const previewPhoto = state.photoUrl ?? state.avatarDataUrl
   return (
     <div className="li-empty">
       <div className="li-empty-header">
         <div className="avatar">
-          {state.avatarDataUrl ? (
-            <img src={state.avatarDataUrl} alt={state.name ?? 'profile'} />
+          {previewPhoto ? (
+            <img src={previewPhoto} alt={state.name ?? 'profile'} />
           ) : (
             <div className="avatar-initials">
               {initialsOf(state.name ?? state.slug)}

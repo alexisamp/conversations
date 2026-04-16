@@ -979,8 +979,17 @@ async function createContactFromLinkedinProfile(input: {
 
 /**
  * Enrich an existing contact from a LinkedIn profile currently being viewed.
- * Only fills empty fields — never overwrites values the user already set.
- * Derives the `company` field from the headline when possible.
+ *
+ * Semantics: the ✨ Enrich button is an explicit user action meaning
+ * "replace the LinkedIn-sourced fields with what the current LinkedIn
+ * profile says". It OVERWRITES job_title, company, location,
+ * personal_context, and profile_photo_url whenever the fresh scrape has a
+ * non-null value for them. Fields that are NOT sourced from LinkedIn
+ * (email, phone, tier, status, notes) are left untouched.
+ *
+ * The `name` field is a special case: we only fill it if the stored name
+ * is empty or looks like a URL slug, because users often hand-edit names
+ * and we don't want to clobber those changes.
  */
 async function enrichContactFromLinkedinProfile(
   input: { contact_id: string } & LinkedinScrapeInput,
@@ -988,7 +997,7 @@ async function enrichContactFromLinkedinProfile(
   const supabase = getSupabase()
   const { data: current, error: fetchErr } = await supabase
     .from('outreach_logs')
-    .select('name, job_title, company, location, personal_context, profile_photo_url')
+    .select('name')
     .eq('id', input.contact_id)
     .maybeSingle()
   if (fetchErr || !current) {
@@ -997,18 +1006,24 @@ async function enrichContactFromLinkedinProfile(
 
   const company = parseCompanyFromHeadline(input.jobTitle)
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const c = current as any
   const updates: Record<string, unknown> = {}
-  if (!c.name && input.name) updates.name = input.name
-  if (!c.job_title && input.jobTitle) updates.job_title = input.jobTitle
-  if (!c.company && company) updates.company = company
-  if (!c.location && input.location) updates.location = input.location
-  if (!c.personal_context && input.about) updates.personal_context = input.about
-  if (!c.profile_photo_url && input.photoUrl) updates.profile_photo_url = input.photoUrl
+  // LinkedIn-sourced fields: always overwrite when scrape has a value
+  if (input.jobTitle) updates.job_title = input.jobTitle
+  if (company) updates.company = company
+  if (input.location) updates.location = input.location
+  if (input.about) updates.personal_context = input.about
+  if (input.photoUrl) updates.profile_photo_url = input.photoUrl
+
+  // Name: only fill if the stored name is empty or looks like a URL slug
+  const storedName = (current as { name: string | null }).name ?? ''
+  const looksLikeSlug =
+    !storedName ||
+    /^[a-z0-9]+(-[a-z0-9]+)*$/.test(storedName) ||
+    !storedName.includes(' ')
+  if (input.name && looksLikeSlug) updates.name = input.name
 
   if (Object.keys(updates).length === 0) {
-    console.log('[contacts] enrich: nothing to fill for', input.contact_id)
+    console.log('[contacts] enrich: nothing to write for', input.contact_id)
     return { ok: true }
   }
 
