@@ -179,6 +179,18 @@ export function setMessageSession(sessionId: number, messageIds: number[]): void
   )
 }
 
+export function recentMessagesForSession(sessionId: number, limit = 500): MessageRow[] {
+  const d = getDb()
+  return d
+    .prepare('SELECT * FROM messages WHERE session_id = ? ORDER BY timestamp_ms ASC LIMIT ?')
+    .all(sessionId, limit) as MessageRow[]
+}
+
+export function assignMessageToSession(messageId: number, sessionId: number): void {
+  const d = getDb()
+  d.prepare('UPDATE messages SET session_id = ? WHERE id = ?').run(sessionId, messageId)
+}
+
 // ─── Sync queue ──────────────────────────────────────────────────────
 
 export function enqueueSync(op: SyncQueueOp, payload: unknown): number {

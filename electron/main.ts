@@ -22,7 +22,8 @@ import { loadEnvFile } from './supabase/env'
 import { registerAuthIpc } from './supabase/auth'
 import { registerContactIpc } from './supabase/contacts'
 import { applyLayout } from './layout'
-import { insertMessage, type MessageInput } from './db/local'
+import { insertMessage, assignMessageToSession, type MessageInput } from './db/local'
+import { handleMessage, recoverOpenSessions } from './session-manager'
 
 loadEnvFile()
 
@@ -732,24 +733,36 @@ function registerIpc(): void {
     }
   })
 
-  // WhatsApp preload → per-message capture. Phase 3b writes raw text to the
-  // local SQLite store only; session management + Supabase sync come in 3c/3e.
+  // WhatsApp preload → per-message capture + session management.
+  // Phase 3b: insert raw message to SQLite.
+  // Phase 3c: assign to a session (open/bump), enqueue Supabase writes.
   ipcMain.on('wa:message', (_event, payload: MessageInput) => {
     try {
       if (!payload || !payload.wa_data_id) return
       if (payload.chat_kind === 'group') return // scope: 1:1 only for now
-      const id = insertMessage(payload)
-      if (id != null) {
-        console.log(
-          '[main] wa:message inserted id=%s chat=%s dir=%s text="%s"',
-          id,
-          payload.chat_phone,
-          payload.direction,
-          (payload.text ?? '').slice(0, 40),
-        )
-      }
+      const msgId = insertMessage(payload)
+      if (msgId == null) return // dedupe — already existed
+
+      console.log(
+        '[main] wa:message id=%d chat=%s dir=%s text="%s"',
+        msgId,
+        payload.chat_phone,
+        payload.direction,
+        (payload.text ?? '').slice(0, 40),
+      )
+
+      // Resolve contact_id for this phone (cached from the sidebar lookup
+      // that already ran when this chat became active). We pass it to the
+      // session manager so it can enqueue the Supabase interaction.
+      // For now we use a quick sync lookup — resolveContactIdByPhone is
+      // async, so we fire-and-forget and let the session manager handle
+      // it with or without a contact_id.
+      const contactId = (waContext as { contactId?: string })?.contactId ?? null
+
+      const sessionId = handleMessage(payload, contactId)
+      assignMessageToSession(msgId, sessionId)
     } catch (err) {
-      console.error('[main] insertMessage failed:', err)
+      console.error('[main] wa:message processing failed:', err)
     }
   })
 
@@ -810,6 +823,9 @@ app.setName('Conversations')
 app.whenReady().then(async () => {
   buildMenu()
   registerIpc()
+  // Recover any sessions that were left open from a previous run
+  // (e.g., app crashed while a 6h window was active).
+  recoverOpenSessions()
   await createMainWindow()
 
   app.on('activate', async () => {
