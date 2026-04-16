@@ -202,6 +202,8 @@ export function MapParticipantModal({ participant, onClose, onDone }: Props) {
                 className="modal-input"
                 value={createName}
                 onChange={(e) => setCreateName(e.target.value)}
+                autoFocus
+                onFocus={(e) => e.target.select()}
               />
             </label>
             <label className="modal-label">
