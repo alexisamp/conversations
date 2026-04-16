@@ -25,6 +25,7 @@ import { applyLayout } from './layout'
 import { insertMessage, assignMessageToSession, type MessageInput } from './db/local'
 import { handleMessage, recoverOpenSessions } from './session-manager'
 import { startSync, stopSync } from './sync/supabase-sync'
+import { autoUpdater } from 'electron-updater'
 
 // Cache phone → contactId so we don't re-resolve on every message.
 // Populated lazily when a message arrives for a new phone.
@@ -892,6 +893,19 @@ app.whenReady().then(async () => {
   recoverOpenSessions()
   // Start the sync worker that drains sync_queue → Supabase every 10s.
   startSync()
+  // Check for auto-updates via GitHub Releases (silent in background).
+  // In dev mode, skip — autoUpdater throws when there's no packaged app.
+  if (app.isPackaged) {
+    autoUpdater.logger = {
+      info: (msg: unknown) => console.log('[updater]', msg),
+      warn: (msg: unknown) => console.warn('[updater]', msg),
+      error: (msg: unknown) => console.error('[updater]', msg),
+      debug: (msg: unknown) => console.log('[updater:debug]', msg),
+    }
+    autoUpdater.checkForUpdatesAndNotify().catch((err) => {
+      console.warn('[updater] check failed:', err)
+    })
+  }
   await createMainWindow()
 
   app.on('activate', async () => {

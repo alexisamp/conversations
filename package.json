@@ -15,11 +15,15 @@
     "dev:vite": "vite",
     "dev:electron": "wait-on tcp:5173 && tsc -p tsconfig.main.json && CONV_DEV=1 CONV_DEVTOOLS=1 electron .",
     "dev": "concurrently -k -n vite,app -c blue,green \"npm:dev:vite\" \"npm:dev:electron\"",
-    "typecheck": "tsc -p tsconfig.main.json --noEmit && tsc -p tsconfig.renderer.json --noEmit"
+    "typecheck": "tsc -p tsconfig.main.json --noEmit && tsc -p tsconfig.renderer.json --noEmit",
+    "predist": "npm run build",
+    "dist": "electron-builder --mac",
+    "release": "npm run dist && gh release create v$(node -p \"require('./package.json').version\") release/*.dmg release/*.zip --title \"v$(node -p \"require('./package.json').version\")\" --notes \"Auto-update release\""
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.46.1",
     "better-sqlite3": "^12.9.0",
+    "electron-updater": "^6.8.3",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },
@@ -32,6 +36,7 @@
     "@vitejs/plugin-react": "^4.3.3",
     "concurrently": "^9.1.0",
     "electron": "^33.2.0",
+    "electron-builder": "^26.8.1",
     "typescript": "^5.6.3",
     "vite": "^5.4.11",
     "wait-on": "^8.0.1"

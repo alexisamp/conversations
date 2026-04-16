@@ -1,0 +1,57 @@
+appId: com.conversations.app
+productName: Conversations
+copyright: Copyright © 2026
+
+# Source directories
+directories:
+  output: release
+  buildResources: assets
+
+# What to include in the app bundle
+files:
+  - dist/**/*
+  - node_modules/**/*
+  - "!node_modules/*/{test,__tests__,tests,powered-test,example,examples,*.md}"
+  - "!node_modules/.cache"
+  - "!node_modules/**/*.ts"
+  - "!node_modules/**/src/**/*.ts"
+  - "!node_modules/**/*.map"
+  - "!node_modules/**/*.d.ts.map"
+
+# Extra files to copy to the app resources (for the .env loader)
+extraResources:
+  - from: .env
+    to: .env
+    filter:
+      - "**/*"
+
+# macOS config
+mac:
+  category: public.app-category.social-networking
+  target:
+    - target: dmg
+      arch:
+        - arm64
+    - target: zip
+      arch:
+        - arm64
+  # No code signing (user doesn't have Apple Developer account).
+  # Users bypass Gatekeeper with right-click → Open on first launch.
+  identity: null
+
+dmg:
+  title: "${productName}"
+  contents:
+    - x: 130
+      y: 220
+    - x: 410
+      y: 220
+      type: link
+      path: /Applications
+
+# Auto-update via GitHub Releases
+publish:
+  provider: github
+  owner: alexisamp
+  repo: conversations
+  private: true
