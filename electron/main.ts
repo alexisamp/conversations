@@ -24,6 +24,7 @@ import { registerContactIpc } from './supabase/contacts'
 import { applyLayout } from './layout'
 import { insertMessage, assignMessageToSession, type MessageInput } from './db/local'
 import { handleMessage, recoverOpenSessions } from './session-manager'
+import { startSync, stopSync } from './sync/supabase-sync'
 
 loadEnvFile()
 
@@ -826,6 +827,8 @@ app.whenReady().then(async () => {
   // Recover any sessions that were left open from a previous run
   // (e.g., app crashed while a 6h window was active).
   recoverOpenSessions()
+  // Start the sync worker that drains sync_queue → Supabase every 10s.
+  startSync()
   await createMainWindow()
 
   app.on('activate', async () => {
@@ -835,4 +838,8 @@ app.whenReady().then(async () => {
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
+})
+
+app.on('before-quit', () => {
+  stopSync()
 })
