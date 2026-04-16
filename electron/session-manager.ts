@@ -21,6 +21,7 @@ import {
   sessionsStillOpen,
   enqueueSync,
   recentMessagesForSession,
+  getDb,
   type SessionRow,
   type MessageInput,
 } from './db/local'
@@ -161,17 +162,27 @@ async function closeAndSummarize(
 
   closeSession(sessionId, now, summary)
 
-  // Enqueue the notes update so SupabaseSync writes the summary to interactions
-  const session = findOpenSession(chatPhone) // won't find it (just closed)
-  // We need the session row to get supabase_interaction_id — but it's
-  // not set yet (SupabaseSync hasn't drained the queue). Instead, enqueue
-  // with session_id and let SupabaseSync correlate when it processes.
-  enqueueSync('interaction:update_notes', {
-    session_id: sessionId,
-    notes: summary,
-  })
+  // Only enqueue the notes update if the session was linked to a contact.
+  // Unmapped sessions (contact_id is null) don't have a Supabase interaction
+  // row, so there's nothing to update. The summary is still stored locally
+  // in sessions.summary for future retroactive sync if the contact gets
+  // mapped later.
+  const closedSession = getDb()
+    .prepare('SELECT contact_id FROM sessions WHERE id = ?')
+    .get(sessionId) as { contact_id: string | null } | undefined
 
-  console.log('[session] closed session=%d summary=%s', sessionId, summary ? 'yes' : 'no')
+  if (closedSession?.contact_id && summary) {
+    enqueueSync('interaction:update_notes', {
+      session_id: sessionId,
+      notes: summary,
+    })
+  }
+
+  console.log('[session] closed session=%d summary=%s contact=%s',
+    sessionId,
+    summary ? 'yes' : 'no',
+    closedSession?.contact_id ?? 'unmapped',
+  )
 }
 
 /**

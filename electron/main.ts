@@ -26,6 +26,10 @@ import { insertMessage, assignMessageToSession, type MessageInput } from './db/l
 import { handleMessage, recoverOpenSessions } from './session-manager'
 import { startSync, stopSync } from './sync/supabase-sync'
 
+// Cache phone → contactId so we don't re-resolve on every message.
+// Populated lazily when a message arrives for a new phone.
+const phoneContactIdCache = new Map<string, string | null>()
+
 loadEnvFile()
 
 const CHROME_UA =
@@ -735,36 +739,84 @@ function registerIpc(): void {
   })
 
   // WhatsApp preload → per-message capture + session management.
-  // Phase 3b: insert raw message to SQLite.
-  // Phase 3c: assign to a session (open/bump), enqueue Supabase writes.
   ipcMain.on('wa:message', (_event, payload: MessageInput) => {
-    try {
-      if (!payload || !payload.wa_data_id) return
-      if (payload.chat_kind === 'group') return // scope: 1:1 only for now
-      const msgId = insertMessage(payload)
-      if (msgId == null) return // dedupe — already existed
+    void (async () => {
+      try {
+        if (!payload || !payload.wa_data_id) return
+        if (payload.chat_kind === 'group') return
 
-      console.log(
-        '[main] wa:message id=%d chat=%s dir=%s text="%s"',
-        msgId,
-        payload.chat_phone,
-        payload.direction,
-        (payload.text ?? '').slice(0, 40),
-      )
+        const msgId = insertMessage(payload)
+        if (msgId == null) return // dedupe
 
-      // Resolve contact_id for this phone (cached from the sidebar lookup
-      // that already ran when this chat became active). We pass it to the
-      // session manager so it can enqueue the Supabase interaction.
-      // For now we use a quick sync lookup — resolveContactIdByPhone is
-      // async, so we fire-and-forget and let the session manager handle
-      // it with or without a contact_id.
-      const contactId = (waContext as { contactId?: string })?.contactId ?? null
+        console.log(
+          '[main] wa:message id=%d chat=%s dir=%s text="%s"',
+          msgId,
+          payload.chat_phone,
+          payload.direction,
+          (payload.text ?? '').slice(0, 40),
+        )
 
-      const sessionId = handleMessage(payload, contactId)
-      assignMessageToSession(msgId, sessionId)
-    } catch (err) {
-      console.error('[main] wa:message processing failed:', err)
-    }
+        // Resolve phone → contactId (cached after first lookup per phone).
+        let contactId = phoneContactIdCache.get(payload.chat_phone)
+        if (contactId === undefined) {
+          // First message for this phone in this app session → resolve async.
+          try {
+            const { getSupabase } = await import('./supabase/client')
+            const { phoneVariants } = await import('./utils/phone')
+            const supabase = getSupabase()
+            const variants = phoneVariants(payload.chat_phone)
+
+            // Try contact_channels first (same logic as resolveContactIdByPhone)
+            let resolved: string | null = null
+            const { data: ch } = await supabase
+              .from('contact_channels')
+              .select('outreach_log_id')
+              .eq('channel', 'whatsapp')
+              .in('channel_identifier', variants)
+              .limit(1)
+              .maybeSingle()
+            if (ch) resolved = ch.outreach_log_id as string
+
+            if (!resolved) {
+              const { data: mp } = await supabase
+                .from('contact_phone_mappings')
+                .select('contact_id')
+                .in('phone_number', variants)
+                .limit(1)
+                .maybeSingle()
+              if (mp) resolved = mp.contact_id as string
+            }
+
+            if (!resolved) {
+              const { data: ol } = await supabase
+                .from('outreach_logs')
+                .select('id')
+                .in('phone', variants)
+                .limit(1)
+                .maybeSingle()
+              if (ol) resolved = ol.id as string
+            }
+
+            phoneContactIdCache.set(payload.chat_phone, resolved)
+            contactId = resolved
+            console.log(
+              '[main] resolved contactId for %s → %s',
+              payload.chat_phone,
+              contactId ?? 'null (unmapped)',
+            )
+          } catch (err) {
+            console.error('[main] contactId resolution failed:', err)
+            phoneContactIdCache.set(payload.chat_phone, null)
+            contactId = null
+          }
+        }
+
+        const sessionId = handleMessage(payload, contactId ?? null)
+        assignMessageToSession(msgId, sessionId)
+      } catch (err) {
+        console.error('[main] wa:message processing failed:', err)
+      }
+    })()
   })
 
   // LinkedIn preload → store + gate
