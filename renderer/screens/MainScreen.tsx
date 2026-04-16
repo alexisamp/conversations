@@ -25,10 +25,10 @@ export function MainScreen({ email }: { email: string }) {
     async (rawPhone: string, waName: string | null = null) => {
       setPersonLookup({ kind: 'loading', phone: rawPhone })
       try {
+        lastHitPhoneRef.current = rawPhone
         const contact = await window.conv.contact.byPhone(rawPhone)
         if (contact) {
           setPersonLookup({ kind: 'found', contact })
-          lastHitPhoneRef.current = rawPhone
         } else {
           setPersonLookup({ kind: 'not-found', phone: rawPhone, waName })
         }
