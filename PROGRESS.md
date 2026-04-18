@@ -5,12 +5,13 @@
 
 ---
 
-## Current status (as of 2026-04-17)
+## Current status (as of 2026-04-18)
 
-**Last commit on `master`:** `b649c5f phase 7: electron-builder + auto-update + first distributable`
+**Last commit on `master`:** `75e341d 0.0.2` (version-bump tag commit)
+**Tags pushed:** `v0.0.1`, `v0.0.2`
 **Remote:** https://github.com/alexisamp/conversations (private)
-**First release:** [v0.0.1](https://github.com/alexisamp/conversations/releases/tag/v0.0.1) — DMG 99 MB, arm64 only, unsigned
-**Working tree dirty:** `electron-builder.yml`, `renderer/index.html`, `renderer/screens/LoginScreen.tsx`, `renderer/styles/tokens.css`, plus untracked `assets/` (icon) and `renderer/{favicon,icon}.png` — these are the mid-flight icon integration from the session that got cut off. Don't blow them away before reading the *Open in-flight work* section.
+**Latest release:** [v0.0.2 — App icon](https://github.com/alexisamp/conversations/releases/tag/v0.0.2) — DMG 100 MB, ZIP 96 MB, arm64 only, unsigned, with auto-update blockmaps + `latest-mac.yml`
+**Working tree clean.**
 
 ---
 
@@ -34,19 +35,13 @@
 | 3f | End-to-end verified with 30s window: WA msg → SQLite → interaction row → Supabase → 30s silence → Gemini summary → `interactions.notes` updated | `b1223a4` | Contact-id resolution via `resolveContactIdByPhone` |
 | 4 | Create person from unmapped 1:1 WA chat (sidebar modal, name auto-selected for fast replace) | `f2dfe54` → `4d7c681` → `5721eab` | `4d7c681` fixes the "had to switch chats to see it" bug by setting `lastHitPhoneRef` on `not-found` too |
 | 7 | `electron-builder` + `electron-updater` + GitHub Releases | `b649c5f` | `npm run release` builds DMG and publishes. arm64-only to keep DMG small and dodge the disk-full trap during universal build |
+| Icon | Custom app icon in bundle + login logo + sidebar favicon; shipped as v0.0.2 | `b90d8d6` / tag `v0.0.2` | Source PNG at `assets/icon-source.png`. No tab bar brand mark (skipped — base64-inline was causing image-processing loops) |
 
 ---
 
-## Open in-flight work 🟡 (session cut off mid-task)
+## Open in-flight work 🟡
 
-**Icon integration** — started after v0.0.1 ship, never finished, never committed.
-
-- `~/Downloads/Conversations Favicon.png` → processed into `assets/icon.png`, `assets/icon.icns`, `assets/icon-source.png`, `renderer/icon.png`, `renderer/favicon.png`.
-- `electron-builder.yml` was updated to reference `assets/icon.icns` for macOS build.
-- `renderer/index.html`, `renderer/screens/LoginScreen.tsx`, `renderer/styles/tokens.css` were edited to use the icon (login header, favicon link, and probably a brand mark in tab bar).
-- **The tab bar brand-mark integration was interrupted** — a base64 data-URL was being embedded inline and then repeated API image-processing errors stopped the work.
-- **To finish:** verify current dirty diff still makes sense, test `npm run dev` visually, then commit as `feat: add app icon to macOS bundle + login + tab bar`.
-- **Then:** bump version to `0.0.2`, `npm run release` so the user and his wife get the new icon via auto-update.
+None. Last working-tree-dirty chapter closed with v0.0.2.
 
 ---
 
@@ -56,7 +51,6 @@ In the order the user agreed to. Roadmap is in SPEC.md §9 but this is the live 
 
 | # | What | Est. | Why now |
 |---|---|---|---|
-| **Icon finish** | Commit the icon work above and ship v0.0.2 | 15 min | Smallest possible first win after handoff |
 | 5 | Retroactive message import (button "Import history") | 3-4h | Scrolls WA Web, scrapes visible messages, groups into historical 6h windows, Gemini-summarizes each, writes retroactive `interactions`. Reuses Phase 3 pipeline. The extension has `scanWhatsAppMessageHistory` + `groupInto6HourWindows` + `autoBackfillWhatsApp` that port almost directly. |
 | 5.1 | Upload LinkedIn photos to Supabase Storage (port `uploadLinkedInPhotoFromBase64` from extension) | 1h | `media.licdn.com` URLs expire; store in `contact-photos` bucket for permanence |
 | 5.2 | Deep LI enrichment — followers, connections, skills, birthday (JSON-LD), company_domain via Gemini `google_search`, approach_angles, etc. Also fixes the **LI location + company scraping bug** (see Known issues). | 3-4h | Polish after the core loop works |
@@ -76,6 +70,8 @@ In the order the user agreed to. Roadmap is in SPEC.md §9 but this is the live 
 6. **No code signing** — user explicitly confirmed: no Apple Developer account, ever. First-launch needs *right-click → Open → Open* on every Mac. Document this in the GitHub release body.
 7. **Disk-full hazard** — `/dev/disk3s5` was at 94% earlier. APFS can silently corrupt freshly-extracted native modules (symptom: `tsc --version` prints nothing, compiler emits zero files). If you ever see `fatal: unable to write new_index file` or silent tsc, the fix is disk cleanup + `rm -rf node_modules && npm cache clean --force && npm install`.
 8. **Universal DMG fails on this machine** — hdiutil needs ~10 GB free scratch. `electron-builder.yml` is pinned to `arm64` only. If a future Intel-Mac user appears, build on a bigger disk or a CI runner.
+9. **Memory-pressure tooling failures** — on this 8 GB machine with Claude Desktop + Claude Code (multiple sessions) + Dia + Granola all running, swap fills up and `tsc`, `mmap`, `git push`, and `electron-builder` all die quietly or hang for 5+ min. Symptoms: `mmap failed: Operation timed out`, `tsc` spending 0.5s CPU in 5 min, silent monitor timeouts. Fix: close Granola + any app not actively needed, wait for swap to flush (macOS recovers over a few minutes once processes release memory), then retry. Reboot is the nuclear option. See **Errors not to repeat §10.10** for disk-full twin of this class of bug.
+10. **Nested semver corruption in `node-api-version`** — during the v0.0.2 build, `@electron/rebuild` crashed with `TypeError: Cannot read properties of undefined (reading 'COMPARATOR')` inside `node-api-version/node_modules/semver/classes/comparator.js`. Root cause: the nested `semver/internal/re.js` was a partial install missing the `exports.t` declaration (line 16). Comparator's `require('../internal/re')` destructured `t` as `undefined`. Fix: `rm -rf node_modules/node-api-version/node_modules/semver` then either `npm install` (slow under memory pressure) or bootstrap a fresh `semver@^7.3.5` in a tmp dir and copy it over. Root cause class: APFS/disk-full during a previous `npm install` left partial files. Full `rm -rf node_modules && npm install` after disk cleanup also works.
 
 ---
 
