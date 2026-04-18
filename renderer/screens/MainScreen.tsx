@@ -3,6 +3,7 @@ import { ContactDetailScreen } from './ContactDetailScreen'
 import { GroupScreen } from './GroupScreen'
 import { LinkedinProfileScreen } from './LinkedinProfileScreen'
 import { MapParticipantModal } from './MapParticipantModal'
+import { SettingsScreen } from './SettingsScreen'
 import type { ContactDetail, GroupParticipant, SidebarContext } from '../conv-api'
 
 type PersonLookupState =
@@ -19,6 +20,7 @@ export function MainScreen({ email }: { email: string }) {
     state: { kind: 'none' },
   })
   const [personLookup, setPersonLookup] = useState<PersonLookupState>({ kind: 'idle' })
+  const [view, setView] = useState<'main' | 'settings'>('main')
   const lastHitPhoneRef = useRef<string | null>(null)
 
   const runPersonLookup = useCallback(
@@ -70,15 +72,29 @@ export function MainScreen({ email }: { email: string }) {
     await window.conv.auth.signOut()
   }
 
+  if (view === 'settings') {
+    return <SettingsScreen onBack={() => setView('main')} />
+  }
+
   return (
     <div className="main">
       <header className="main-header">
         <div className="email" title={email}>
           {email}
         </div>
-        <button className="ghost-button" onClick={handleSignOut}>
-          Sign out
-        </button>
+        <div className="header-actions">
+          <button
+            className="icon-button"
+            onClick={() => setView('settings')}
+            title="Settings"
+            aria-label="Settings"
+          >
+            ⚙︎
+          </button>
+          <button className="ghost-button" onClick={handleSignOut}>
+            Sign out
+          </button>
+        </div>
       </header>
 
       <details className="dev-lookup-collapsible">

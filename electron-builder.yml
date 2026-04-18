@@ -52,9 +52,8 @@ dmg:
       type: link
       path: /Applications
 
-# Auto-update via GitHub Releases
+# Auto-update via GitHub Releases (repo is public — no token needed)
 publish:
   provider: github
   owner: alexisamp
   repo: conversations
-  private: true

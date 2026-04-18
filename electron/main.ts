@@ -696,8 +696,176 @@ function buildMenu(): void {
 }
 
 // ─── IPC registration ────────────────────────────────────────────────
+// ─── Auto-updater state & events ─────────────────────────────────────
+
+type UpdaterState =
+  | 'idle'
+  | 'checking'
+  | 'available'
+  | 'not-available'
+  | 'downloading'
+  | 'downloaded'
+  | 'error'
+
+interface UpdaterStatus {
+  currentVersion: string
+  state: UpdaterState
+  availableVersion?: string
+  progressPercent?: number
+  error?: string
+  dev: boolean
+}
+
+let updaterStatus: UpdaterStatus = {
+  currentVersion: app.getVersion(),
+  state: 'idle',
+  dev: !app.isPackaged,
+}
+
+function setUpdaterStatus(patch: Partial<UpdaterStatus>): void {
+  updaterStatus = { ...updaterStatus, ...patch }
+  sidebarView?.webContents.send('updater:status', updaterStatus)
+}
+
+/**
+ * Custom installer for unsigned macOS builds.
+ *
+ * electron-updater's default install-on-quit flow invokes `codesign --verify`
+ * on the newly-written bundle and rolls back when the app isn't signed. Our
+ * app is intentionally unsigned (no Apple Developer account), so we sidestep
+ * Squirrel entirely: spawn a detached shell script that waits for this
+ * process to exit, ditto-extracts the already-downloaded ZIP to a temp dir,
+ * rsyncs the new bundle over /Applications/Conversations.app, and relaunches.
+ */
+function runCustomInstaller(): void {
+  const cacheDir = path.join(app.getPath('userData'), '..', 'Caches', 'conversations-updater')
+  const zipPath = path.join(cacheDir, 'pending', 'update.zip')
+  const altZip = path.join(cacheDir, 'update.zip')
+  const appPath = app.getPath('exe').replace(/\/Contents\/MacOS\/[^/]+$/, '')
+
+  // Require Node's child_process via dynamic import to avoid bundling concerns
+  // in the rare case this module is ever re-used outside Electron.
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const cp = require('child_process') as typeof import('child_process')
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const fs = require('fs') as typeof import('fs')
+
+  const usableZip = fs.existsSync(zipPath)
+    ? zipPath
+    : fs.existsSync(altZip)
+      ? altZip
+      : null
+
+  if (!usableZip) {
+    setUpdaterStatus({ state: 'error', error: 'Downloaded update ZIP not found' })
+    return
+  }
+
+  const tmpExtract = `/tmp/conversations-update-${Date.now()}`
+  const pid = process.pid
+
+  const script = `
+set -e
+# Wait for the running app process to actually exit
+i=0
+while ps -p ${pid} > /dev/null 2>&1; do
+  i=$((i+1))
+  if [ $i -gt 50 ]; then break; fi
+  sleep 0.2
+done
+
+mkdir -p "${tmpExtract}"
+/usr/bin/ditto -xk "${usableZip}" "${tmpExtract}"
+
+# Find the new .app inside the extract dir (usually Conversations.app at root)
+NEW_APP=$(find "${tmpExtract}" -maxdepth 2 -name "*.app" -type d | head -1)
+if [ -z "$NEW_APP" ]; then exit 1; fi
+
+# Atomic-ish replace: delete old, move new into place
+/bin/rm -rf "${appPath}"
+/bin/mv "$NEW_APP" "${appPath}"
+
+# Drop the xattr that Gatekeeper sometimes adds to extracted content
+/usr/bin/xattr -d com.apple.quarantine "${appPath}" 2>/dev/null || true
+
+/bin/rm -rf "${tmpExtract}"
+
+# Relaunch
+/usr/bin/open "${appPath}"
+`.trim()
+
+  try {
+    const child = cp.spawn('/bin/sh', ['-c', script], {
+      detached: true,
+      stdio: 'ignore',
+    })
+    child.unref()
+    // Give the shell a tick to actually start before we quit
+    setTimeout(() => app.quit(), 200)
+  } catch (err: unknown) {
+    setUpdaterStatus({ state: 'error', error: String((err as Error)?.message ?? err) })
+  }
+}
+
+function wireUpdaterEvents(): void {
+  autoUpdater.on('checking-for-update', () => {
+    setUpdaterStatus({ state: 'checking', error: undefined })
+  })
+  autoUpdater.on('update-available', (info) => {
+    setUpdaterStatus({ state: 'available', availableVersion: info.version })
+  })
+  autoUpdater.on('update-not-available', () => {
+    setUpdaterStatus({ state: 'not-available' })
+  })
+  autoUpdater.on('download-progress', (p) => {
+    setUpdaterStatus({ state: 'downloading', progressPercent: Math.round(p.percent) })
+  })
+  autoUpdater.on('update-downloaded', (info) => {
+    setUpdaterStatus({ state: 'downloaded', availableVersion: info.version })
+  })
+  autoUpdater.on('error', (err) => {
+    setUpdaterStatus({ state: 'error', error: String(err?.message ?? err) })
+  })
+}
+
 function registerIpc(): void {
   ipcMain.handle('sidebar:toggle', () => toggleSidebar())
+
+  // Updater IPCs — explicit 3-step flow:
+  //   check → (if available) download → (when downloaded) restart-install
+  ipcMain.handle('updater:get-status', () => updaterStatus)
+  ipcMain.handle('updater:check', async () => {
+    if (!app.isPackaged) {
+      setUpdaterStatus({ state: 'error', error: 'Dev mode — updater unavailable' })
+      return updaterStatus
+    }
+    try {
+      setUpdaterStatus({ state: 'checking', error: undefined })
+      await autoUpdater.checkForUpdates()
+    } catch (err: unknown) {
+      setUpdaterStatus({ state: 'error', error: String((err as Error)?.message ?? err) })
+    }
+    return updaterStatus
+  })
+  ipcMain.handle('updater:download', async () => {
+    if (!app.isPackaged) {
+      return updaterStatus
+    }
+    if (updaterStatus.state !== 'available' && updaterStatus.state !== 'error') {
+      return updaterStatus
+    }
+    try {
+      await autoUpdater.downloadUpdate()
+    } catch (err: unknown) {
+      setUpdaterStatus({ state: 'error', error: String((err as Error)?.message ?? err) })
+    }
+    return updaterStatus
+  })
+  ipcMain.handle('updater:restart-install', () => {
+    if (updaterStatus.state === 'downloaded') {
+      runCustomInstaller()
+    }
+  })
 
   registerAuthIpc((status) => {
     sidebarView?.webContents.send('auth:changed', status)
@@ -893,8 +1061,11 @@ app.whenReady().then(async () => {
   recoverOpenSessions()
   // Start the sync worker that drains sync_queue → Supabase every 10s.
   startSync()
-  // Check for auto-updates via GitHub Releases (silent in background).
-  // In dev mode, skip — autoUpdater throws when there's no packaged app.
+  // Auto-update via GitHub Releases.
+  // Explicit flow (no silent auto-download, no auto-install-on-quit):
+  //   user clicks "Install" in Settings → we downloadUpdate()
+  //   user clicks "Restart" in Settings → we run our own installer script
+  //   (native autoInstallOnAppQuit fails silently on unsigned macOS builds).
   if (app.isPackaged) {
     autoUpdater.logger = {
       info: (msg: unknown) => console.log('[updater]', msg),
@@ -902,8 +1073,13 @@ app.whenReady().then(async () => {
       error: (msg: unknown) => console.error('[updater]', msg),
       debug: (msg: unknown) => console.log('[updater:debug]', msg),
     }
-    autoUpdater.checkForUpdatesAndNotify().catch((err) => {
-      console.warn('[updater] check failed:', err)
+    autoUpdater.autoDownload = false
+    autoUpdater.autoInstallOnAppQuit = false
+    wireUpdaterEvents()
+    // Fire one initial check at boot so the "Available" state is seen
+    // immediately in Settings. Download does NOT start automatically.
+    autoUpdater.checkForUpdates().catch((err) => {
+      setUpdaterStatus({ state: 'error', error: String(err?.message ?? err) })
     })
   }
   await createMainWindow()

@@ -220,6 +220,35 @@ const api = {
     navigate: (url: string): Promise<{ ok: boolean; error?: string }> =>
       ipcRenderer.invoke('li:navigate', url),
   },
+  updater: {
+    getStatus: (): Promise<UpdaterStatus> => ipcRenderer.invoke('updater:get-status'),
+    check: (): Promise<UpdaterStatus> => ipcRenderer.invoke('updater:check'),
+    download: (): Promise<UpdaterStatus> => ipcRenderer.invoke('updater:download'),
+    restartInstall: (): Promise<void> => ipcRenderer.invoke('updater:restart-install'),
+    onStatus: (cb: (status: UpdaterStatus) => void): (() => void) => {
+      const listener = (_: unknown, status: UpdaterStatus) => cb(status)
+      ipcRenderer.on('updater:status', listener)
+      return () => ipcRenderer.off('updater:status', listener)
+    },
+  },
+}
+
+export type UpdaterState =
+  | 'idle'
+  | 'checking'
+  | 'available'
+  | 'not-available'
+  | 'downloading'
+  | 'downloaded'
+  | 'error'
+
+export interface UpdaterStatus {
+  currentVersion: string
+  state: UpdaterState
+  availableVersion?: string
+  progressPercent?: number
+  error?: string
+  dev: boolean
 }
 
 contextBridge.exposeInMainWorld('conv', api)

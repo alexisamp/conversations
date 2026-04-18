@@ -200,6 +200,31 @@ export type ConvApi = {
   li: {
     navigate(url: string): Promise<{ ok: boolean; error?: string }>
   }
+  updater: {
+    getStatus(): Promise<UpdaterStatus>
+    check(): Promise<UpdaterStatus>
+    download(): Promise<UpdaterStatus>
+    restartInstall(): Promise<void>
+    onStatus(cb: (status: UpdaterStatus) => void): () => void
+  }
+}
+
+export type UpdaterState =
+  | 'idle'
+  | 'checking'
+  | 'available'
+  | 'not-available'
+  | 'downloading'
+  | 'downloaded'
+  | 'error'
+
+export interface UpdaterStatus {
+  currentVersion: string
+  state: UpdaterState
+  availableVersion?: string
+  progressPercent?: number
+  error?: string
+  dev: boolean
 }
 
 declare global {
