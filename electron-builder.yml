@@ -7,6 +7,9 @@ directories:
   output: release
   buildResources: assets
 
+# Icon explicitly referenced so electron-builder uses the custom icns
+icon: assets/icon.icns
+
 # What to include in the app bundle
 files:
   - dist/**/*

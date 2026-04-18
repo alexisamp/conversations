@@ -70,6 +70,11 @@ body {
   padding: 24px;
   text-align: center;
 }
+.login-logo {
+  border-radius: 16px;
+  margin-bottom: 14px;
+  box-shadow: 0 4px 12px rgba(0, 55, 32, 0.15);
+}
 .login h1 {
   color: var(--burnham);
   margin: 0 0 8px;

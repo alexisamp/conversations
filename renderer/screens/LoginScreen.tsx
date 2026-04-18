@@ -19,6 +19,13 @@ export function LoginScreen() {
 
   return (
     <div className="login">
+      <img
+        src="./icon.png"
+        alt="Conversations"
+        className="login-logo"
+        width={72}
+        height={72}
+      />
       <h1>Conversations</h1>
       <p>Sign in to access your reThink contacts.</p>
       <button onClick={handleSignIn} disabled={loading}>
