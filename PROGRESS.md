@@ -5,13 +5,15 @@
 
 ---
 
-## Current status (as of 2026-04-18)
+## Current status (as of 2026-04-18 pm)
 
-**Last commit on `master`:** `75e341d 0.0.2` (version-bump tag commit)
-**Tags pushed:** `v0.0.1`, `v0.0.2`
-**Remote:** https://github.com/alexisamp/conversations (private)
-**Latest release:** [v0.0.2 — App icon](https://github.com/alexisamp/conversations/releases/tag/v0.0.2) — DMG 100 MB, ZIP 96 MB, arm64 only, unsigned, with auto-update blockmaps + `latest-mac.yml`
+**Last commit on `master`:** `f1d77bf 0.0.3` (version-bump tag commit)
+**Tags pushed:** `v0.0.1`, `v0.0.2`, `v0.0.3`
+**Remote:** https://github.com/alexisamp/conversations (**public**)
+**Latest release:** [v0.0.3 — Settings gear + manual updater](https://github.com/alexisamp/conversations/releases/tag/v0.0.3)
 **Working tree clean.**
+
+**Updater flow (as of v0.0.3):** explicit user-controlled, no silent auto-download, no Squirrel install-on-quit. User opens ⚙︎ Settings in sidebar → Check → Install (progress) → Restart. The "Restart" handler invokes a custom shell script (`runCustomInstaller` in `electron/main.ts`) that replaces `/Applications/Conversations.app` via `ditto` + `mv`, bypassing `codesign --verify` which rejects unsigned bundles.
 
 ---
 
@@ -36,6 +38,7 @@
 | 4 | Create person from unmapped 1:1 WA chat (sidebar modal, name auto-selected for fast replace) | `f2dfe54` → `4d7c681` → `5721eab` | `4d7c681` fixes the "had to switch chats to see it" bug by setting `lastHitPhoneRef` on `not-found` too |
 | 7 | `electron-builder` + `electron-updater` + GitHub Releases | `b649c5f` | `npm run release` builds DMG and publishes. arm64-only to keep DMG small and dodge the disk-full trap during universal build |
 | Icon | Custom app icon in bundle + login logo + sidebar favicon; shipped as v0.0.2 | `b90d8d6` / tag `v0.0.2` | Source PNG at `assets/icon-source.png`. No tab bar brand mark (skipped — base64-inline was causing image-processing loops) |
+| Settings | ⚙︎ gear icon + Settings screen + explicit Check/Install/Restart flow + custom installer bypassing `codesign --verify`; shipped as v0.0.3 | `c6ab78d` / tag `v0.0.3` | `runCustomInstaller()` in `electron/main.ts`. `autoDownload=false`, `autoInstallOnAppQuit=false`. Future updates never require a manual DMG install. |
 
 ---
 
