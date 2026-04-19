@@ -738,23 +738,33 @@ function setUpdaterStatus(patch: Partial<UpdaterStatus>): void {
  * rsyncs the new bundle over /Applications/Conversations.app, and relaunches.
  */
 function runCustomInstaller(): void {
-  const cacheDir = path.join(app.getPath('userData'), '..', 'Caches', 'conversations-updater')
-  const zipPath = path.join(cacheDir, 'pending', 'update.zip')
-  const altZip = path.join(cacheDir, 'update.zip')
-  const appPath = app.getPath('exe').replace(/\/Contents\/MacOS\/[^/]+$/, '')
-
-  // Require Node's child_process via dynamic import to avoid bundling concerns
-  // in the rare case this module is ever re-used outside Electron.
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const cp = require('child_process') as typeof import('child_process')
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const fs = require('fs') as typeof import('fs')
 
-  const usableZip = fs.existsSync(zipPath)
-    ? zipPath
-    : fs.existsSync(altZip)
-      ? altZip
-      : null
+  // electron-updater writes to ~/Library/Caches/conversations-updater/ on macOS.
+  // Earlier versions of this function used the wrong base path (userData + ..
+  // + Caches), which produced ~/Library/Application Support/Caches/... — a
+  // path that never exists. Using app.getPath('cache') gives the correct dir.
+  const cacheDir = path.join(app.getPath('cache'), 'conversations-updater')
+  const topLevelZip = path.join(cacheDir, 'update.zip')
+  const pendingDir = path.join(cacheDir, 'pending')
+  const appPath = app.getPath('exe').replace(/\/Contents\/MacOS\/[^/]+$/, '')
+
+  // Prefer the top-level update.zip (electron-updater writes it after a
+  // successful download). Fall back to the first *.zip inside pending/ in
+  // case the layout changes between updater versions.
+  let usableZip: string | null = null
+  if (fs.existsSync(topLevelZip)) {
+    usableZip = topLevelZip
+  } else if (fs.existsSync(pendingDir)) {
+    const zipInPending = fs
+      .readdirSync(pendingDir)
+      .filter((f: string) => f.endsWith('.zip'))
+      .map((f: string) => path.join(pendingDir, f))[0]
+    if (zipInPending) usableZip = zipInPending
+  }
 
   if (!usableZip) {
     setUpdaterStatus({ state: 'error', error: 'Downloaded update ZIP not found' })
