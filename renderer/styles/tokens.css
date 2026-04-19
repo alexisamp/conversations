@@ -1289,3 +1289,20 @@ body {
   opacity: 0.5;
   cursor: not-allowed;
 }
+
+/* ─── Phase 5a: backfill button ─────────────────────────────────── */
+.section-actions-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.backfill-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.backfill-result {
+  font-size: 10px;
+  color: var(--shuttle);
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+}

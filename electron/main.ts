@@ -807,6 +807,204 @@ if [ -z "$NEW_APP" ]; then exit 1; fi
   }
 }
 
+// ─── Phase 5a: retroactive-import types, DOM scanner, window grouping ─
+
+interface HistoricalEntry {
+  timestamp: number
+  direction: 'inbound' | 'outbound'
+  dataId: string
+}
+
+interface BackfillImportInput {
+  contactId: string
+  phone: string
+  entries: HistoricalEntry[]
+}
+
+interface BackfillImportResult {
+  windowsFound: number
+  windowsImported: number
+  skipped: number
+  error?: string
+}
+
+// Script injected into WhatsApp's webContents via executeJavaScript. Must be
+// SELF-CONTAINED (no outer-scope references) because it runs in the page's
+// main world, not in our preload's isolated context.
+const BACKFILL_SCAN_SCRIPT = `
+(function() {
+  function parseTs(s) {
+    var c = s.lastIndexOf(','); if (c === -1) return null;
+    var t = s.slice(0, c).trim(), d = s.slice(c + 1).trim();
+    var p = d.split('/'); if (p.length !== 3) return null;
+    var p0 = parseInt(p[0]), p1 = parseInt(p[1]), y = parseInt(p[2]);
+    if (isNaN(y) || p[2].length !== 4) return null;
+    var mo, da;
+    if (p0 > 12) { da = p0; mo = p1; } else { mo = p0; da = p1; }
+    var tm = t.match(/(\\d+):(\\d+)/); if (!tm) return null;
+    var h = parseInt(tm[1]), mi = parseInt(tm[2]);
+    if (/p[.\\s]*m/i.test(t) && h !== 12) h += 12;
+    else if (/a[.\\s]*m/i.test(t) && h === 12) h = 0;
+    var dt = new Date(y, mo - 1, da, h, mi);
+    return isNaN(dt.getTime()) ? null : dt.getTime();
+  }
+  try {
+    var entries = [];
+    var seen = new Set();
+    var els = document.querySelectorAll('[data-pre-plain-text]');
+    for (var i = 0; i < els.length; i++) {
+      var el = els[i];
+      var pre = el.getAttribute('data-pre-plain-text') || '';
+      var m = pre.match(/\\[([^\\]]+)\\]/);
+      if (!m) continue;
+      var ts = parseTs(m[1]);
+      if (!ts) continue;
+      var bubble = el.closest('[data-id]');
+      var dataId = bubble ? (bubble.getAttribute('data-id') || '') : '';
+      if (!dataId || dataId.indexOf('@c.us') === -1) continue;
+      if (seen.has(dataId)) continue;
+      seen.add(dataId);
+      var isIn = !!(el.closest('.message-in') || (bubble && bubble.closest('.message-in')));
+      entries.push({ timestamp: ts, direction: isIn ? 'inbound' : 'outbound', dataId: dataId });
+    }
+    return entries;
+  } catch (e) { return []; }
+})()
+`.trim()
+
+/**
+ * Given sorted entries from scanHistoricalMessages, group into FIXED 6h windows
+ * (same semantics as the Chrome extension's groupInto6HourWindows — a window
+ * starts at the first message and closes at start+6h; new windows begin on the
+ * next message outside that range).
+ *
+ * Note: the live SessionManager uses SLIDING 6h windows, but for historical
+ * backfill fixed windows are simpler and match how the extension wrote rows.
+ */
+interface BackfillWindow {
+  timestamp: number
+  direction: 'inbound' | 'outbound'
+  messageCount: number
+  windowEnd: number
+}
+
+function groupInto6HourWindows(entries: HistoricalEntry[]): BackfillWindow[] {
+  if (entries.length === 0) return []
+  const sorted = [...entries].sort((a, b) => a.timestamp - b.timestamp)
+  const SIX_HOURS = 6 * 60 * 60 * 1000
+  const windows: BackfillWindow[] = []
+  let group: HistoricalEntry[] = []
+  let windowStart = sorted[0].timestamp
+
+  const flush = () => {
+    if (group.length === 0) return
+    const outCount = group.filter((e) => e.direction === 'outbound').length
+    const inCount = group.length - outCount
+    windows.push({
+      timestamp: windowStart,
+      direction: outCount >= inCount ? 'outbound' : 'inbound',
+      messageCount: group.length,
+      windowEnd: windowStart + SIX_HOURS,
+    })
+  }
+
+  for (const entry of sorted) {
+    if (entry.timestamp - windowStart > SIX_HOURS) {
+      flush()
+      windowStart = entry.timestamp
+      group = [entry]
+    } else {
+      group.push(entry)
+    }
+  }
+  flush()
+  return windows
+}
+
+/**
+ * Core of the backfill action. For each 6h window, check whether an
+ * interaction already exists for that day/contact/whatsapp (to stay
+ * idempotent) and if not, insert {interaction, extension_interaction_window}
+ * rows directly to Supabase. We bypass the sync_queue here because the
+ * backfill is user-initiated and synchronous — no offline retry semantics
+ * needed for the first slice.
+ */
+async function importBackfillWindows(
+  input: BackfillImportInput,
+): Promise<BackfillImportResult> {
+  const { getSupabase } = await import('./supabase/client')
+  const client = getSupabase()
+
+  const {
+    data: { user },
+  } = await client.auth.getUser()
+  if (!user) {
+    return { windowsFound: 0, windowsImported: 0, skipped: 0, error: 'not-signed-in' }
+  }
+
+  const windows = groupInto6HourWindows(input.entries)
+  let imported = 0
+  let skipped = 0
+
+  for (const win of windows) {
+    const interactionDate = new Date(win.timestamp).toISOString().split('T')[0]
+
+    // Idempotency: skip if an interaction for this (user, contact, day, whatsapp) exists
+    const { data: existing } = await client
+      .from('interactions')
+      .select('id')
+      .eq('user_id', user.id)
+      .eq('contact_id', input.contactId)
+      .eq('interaction_date', interactionDate)
+      .eq('type', 'whatsapp')
+      .maybeSingle()
+
+    if (existing) {
+      skipped++
+      continue
+    }
+
+    const { data: interaction, error: iErr } = await client
+      .from('interactions')
+      .insert({
+        user_id: user.id,
+        contact_id: input.contactId,
+        type: 'whatsapp',
+        direction: win.direction,
+        notes: `[backfill] ${win.messageCount} mensajes`,
+        interaction_date: interactionDate,
+      })
+      .select('id')
+      .single()
+
+    if (iErr || !interaction) {
+      console.warn('[backfill] interaction insert failed:', iErr)
+      continue
+    }
+
+    const windowStartIso = new Date(win.timestamp).toISOString()
+    const windowEndIso = new Date(win.windowEnd).toISOString()
+
+    const { error: wErr } = await client
+      .from('extension_interaction_windows')
+      .insert({
+        user_id: user.id,
+        contact_id: input.contactId,
+        interaction_id: interaction.id,
+        channel: 'whatsapp',
+        window_start: windowStartIso,
+        window_end: windowEndIso,
+        direction: win.direction,
+        message_count: win.messageCount,
+      })
+
+    if (wErr) console.warn('[backfill] window insert failed:', wErr)
+    imported++
+  }
+
+  return { windowsFound: windows.length, windowsImported: imported, skipped }
+}
+
 function wireUpdaterEvents(): void {
   autoUpdater.on('checking-for-update', () => {
     setUpdaterStatus({ state: 'checking', error: undefined })
@@ -866,6 +1064,35 @@ function registerIpc(): void {
       runCustomInstaller()
     }
   })
+
+  // ─── Phase 5a: retroactive backfill ─────────────────────────────
+  // Scan the currently-open WhatsApp chat's visible message history and
+  // return normalized entries {timestamp, direction}. Read-only — does not
+  // touch the DOM or navigate. Limited to messages WhatsApp has preloaded
+  // (no auto-scroll yet — that's Phase 5b).
+  ipcMain.handle('backfill:scan-history', async () => {
+    if (!whatsappView) return { entries: [] as HistoricalEntry[], error: 'wa-view-missing' }
+    try {
+      const entries = (await whatsappView.webContents.executeJavaScript(
+        BACKFILL_SCAN_SCRIPT,
+        true,
+      )) as HistoricalEntry[]
+      return { entries }
+    } catch (err: unknown) {
+      return { entries: [], error: String((err as Error)?.message ?? err) }
+    }
+  })
+
+  // Take raw entries + a known contact/user, group into 6h windows, and
+  // enqueue one interaction per window to the sync_queue. Skips windows
+  // that already have a matching (user_id, contact_id, date, type='whatsapp')
+  // interaction in Supabase so the button is idempotent.
+  ipcMain.handle(
+    'backfill:import-windows',
+    async (_event, input: BackfillImportInput) => {
+      return importBackfillWindows(input)
+    },
+  )
 
   registerAuthIpc((status) => {
     sidebarView?.webContents.send('auth:changed', status)

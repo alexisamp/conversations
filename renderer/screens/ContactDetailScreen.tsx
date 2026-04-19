@@ -130,11 +130,18 @@ export function ContactDetailScreen({ contact, onRefresh }: Props) {
       <div className="section">
         <div className="section-header">
           <span className="section-title">Recent Activity</span>
-          {!loggingOpen && (
-            <button className="section-action" onClick={() => setLoggingOpen(true)}>
-              + Log
-            </button>
-          )}
+          <div className="section-actions-row">
+            <BackfillButton
+              contactId={contact.id}
+              contactName={contact.name}
+              onImported={onRefresh}
+            />
+            {!loggingOpen && (
+              <button className="section-action" onClick={() => setLoggingOpen(true)}>
+                + Log
+              </button>
+            )}
+          </div>
         </div>
 
         {loggingOpen && (
@@ -348,6 +355,69 @@ function AddValueLogForm({
           Cancel
         </button>
       </div>
+    </div>
+  )
+}
+
+// ─── Phase 5a: Import history button ────────────────────────────
+
+function BackfillButton({
+  contactId,
+  contactName,
+  onImported,
+}: {
+  contactId: string
+  contactName: string
+  onImported: () => void
+}) {
+  const [busy, setBusy] = useState(false)
+  const [result, setResult] = useState<string | null>(null)
+
+  async function handleImport() {
+    setBusy(true)
+    setResult(null)
+    try {
+      const scanRes = await window.conv.backfill.scanHistory()
+      if (scanRes.error) {
+        setResult(`Error: ${scanRes.error}`)
+        return
+      }
+      if (!scanRes.entries.length) {
+        setResult('No messages found — open the chat first')
+        return
+      }
+      const importRes = await window.conv.backfill.importWindows({
+        contactId,
+        phone: '',
+        entries: scanRes.entries,
+      })
+      if (importRes.error) {
+        setResult(`Error: ${importRes.error}`)
+        return
+      }
+      const { windowsFound, windowsImported, skipped } = importRes
+      setResult(
+        `Imported ${windowsImported} of ${windowsFound} windows (${skipped} skipped)`,
+      )
+      if (windowsImported > 0) onImported()
+    } catch (err) {
+      setResult(err instanceof Error ? err.message : 'Import failed')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="backfill-wrap">
+      <button
+        className="section-action"
+        onClick={handleImport}
+        disabled={busy}
+        title={`Import the visible history of the open chat for ${contactName}`}
+      >
+        {busy ? 'Importing…' : '📥 Import history'}
+      </button>
+      {result && <span className="backfill-result">{result}</span>}
     </div>
   )
 }

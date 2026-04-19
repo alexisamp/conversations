@@ -197,6 +197,10 @@ export type ConvApi = {
     navigateToDm(phone: string): Promise<{ ok: boolean; error?: string }>
     invalidatePhoneCache(phone: string): void
   }
+  backfill: {
+    scanHistory(): Promise<{ entries: HistoricalEntry[]; error?: string }>
+    importWindows(input: BackfillImportInput): Promise<BackfillImportResult>
+  }
   li: {
     navigate(url: string): Promise<{ ok: boolean; error?: string }>
   }
@@ -207,6 +211,25 @@ export type ConvApi = {
     restartInstall(): Promise<void>
     onStatus(cb: (status: UpdaterStatus) => void): () => void
   }
+}
+
+export interface HistoricalEntry {
+  timestamp: number
+  direction: 'inbound' | 'outbound'
+  dataId: string
+}
+
+export interface BackfillImportInput {
+  contactId: string
+  phone: string
+  entries: HistoricalEntry[]
+}
+
+export interface BackfillImportResult {
+  windowsFound: number
+  windowsImported: number
+  skipped: number
+  error?: string
 }
 
 export type UpdaterState =

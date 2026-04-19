@@ -216,6 +216,14 @@ const api = {
       ipcRenderer.send('main:invalidatePhoneCache', phone)
     },
   },
+  backfill: {
+    scanHistory: (): Promise<{ entries: HistoricalEntry[]; error?: string }> =>
+      ipcRenderer.invoke('backfill:scan-history'),
+    importWindows: (
+      input: BackfillImportInput,
+    ): Promise<BackfillImportResult> =>
+      ipcRenderer.invoke('backfill:import-windows', input),
+  },
   li: {
     navigate: (url: string): Promise<{ ok: boolean; error?: string }> =>
       ipcRenderer.invoke('li:navigate', url),
@@ -231,6 +239,25 @@ const api = {
       return () => ipcRenderer.off('updater:status', listener)
     },
   },
+}
+
+export interface HistoricalEntry {
+  timestamp: number
+  direction: 'inbound' | 'outbound'
+  dataId: string
+}
+
+export interface BackfillImportInput {
+  contactId: string
+  phone: string
+  entries: HistoricalEntry[]
+}
+
+export interface BackfillImportResult {
+  windowsFound: number
+  windowsImported: number
+  skipped: number
+  error?: string
 }
 
 export type UpdaterState =
