@@ -250,6 +250,41 @@ async function findContactByPhone(phone: string): Promise<ContactDetail | null> 
   return loadContactDetail(contactId)
 }
 
+/**
+ * Name-based lookup fallback. Used when WhatsApp's new DOM (2026-04) gives us
+ * only the saved contact's display name (no phone number). Returns the best
+ * exact match. If 0 or >1 matches exist, returns null and the sidebar falls
+ * back to an empty state so the user can manually map.
+ */
+async function findContactByName(name: string): Promise<ContactDetail | null> {
+  const q = name.trim()
+  if (q.length < 2) return null
+  const supabase = getSupabase()
+  // Exact match first (case-insensitive). Single hit wins.
+  const { data: exact } = await supabase
+    .from('outreach_logs')
+    .select('id')
+    .ilike('name', q)
+    .limit(2)
+  if (exact && exact.length === 1) {
+    console.log('[contacts] name exact match →', q)
+    return loadContactDetail((exact[0] as { id: string }).id)
+  }
+  // Fall back to substring match only if there's exactly one result.
+  // More than one is ambiguous — let the user disambiguate manually.
+  const { data: fuzzy } = await supabase
+    .from('outreach_logs')
+    .select('id, name')
+    .ilike('name', `%${q}%`)
+    .limit(3)
+  if (fuzzy && fuzzy.length === 1) {
+    console.log('[contacts] name fuzzy match →', q, '→', (fuzzy[0] as { name: string }).name)
+    return loadContactDetail((fuzzy[0] as { id: string }).id)
+  }
+  console.log('[contacts] name lookup ambiguous or empty →', q, `(${fuzzy?.length ?? 0} candidates)`)
+  return null
+}
+
 async function loadContactDetail(contactId: string): Promise<ContactDetail | null> {
   const supabase = getSupabase()
 
@@ -1072,6 +1107,7 @@ async function attachLidToExistingContact(input: {
 
 export function registerContactIpc(): void {
   ipcMain.handle('contact:byPhone', (_event, phone: string) => findContactByPhone(phone))
+  ipcMain.handle('contact:byName', (_event, name: string) => findContactByName(name))
   ipcMain.handle('contact:logInteraction', (_event, input: LogInteractionInput) =>
     logInteraction(input),
   )

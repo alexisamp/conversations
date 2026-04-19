@@ -28,7 +28,12 @@ type Participant = {
 
 type ChatIdentity =
   | { kind: 'none' }
-  | { kind: 'person'; phone: string }
+  // 2026-04: WhatsApp no longer exposes phone numbers in the message DOM
+  // (data-id is now an opaque 20-char hex). We detect the active chat from
+  // the chat-list row marked [aria-selected="true"] or the header span, which
+  // gives us either a saved contact name OR a visible phone (for unsaved
+  // numbers). The backend resolver tries phone first, falls back to name.
+  | { kind: 'person'; phone: string | null; name: string | null }
   | { kind: 'group'; groupId: string }
 
 let currentSignature: string | null = null
@@ -79,16 +84,63 @@ function lastSenderIdentity(
 }
 
 function getActiveChatIdentity(): ChatIdentity {
-  const messages = document.querySelectorAll('[data-id]')
-  for (const msg of Array.from(messages)) {
-    const dataId = msg.getAttribute('data-id')
-    if (!dataId) continue
-    const chatId = firstChatSegment(dataId)
-    if (!chatId) continue
-    if (chatId.endsWith('@g.us')) return { kind: 'group', groupId: chatId }
-    return { kind: 'person', phone: chatId.slice(0, -'@c.us'.length) }
+  // New DOM (2026-04): find the chat-list row that is [aria-selected="true"].
+  // It lives under <div role="grid" aria-label="Chat list"> so we can scope
+  // the query to avoid false positives elsewhere.
+  const chatList =
+    document.querySelector('[role="grid"][aria-label="Chat list"]') ??
+    document.querySelector('[role="grid"]')
+  const selectedRow = chatList?.querySelector('[aria-selected="true"]')
+
+  // Group detection: when a group is active the chat-list row contains the
+  // group's display name (no distinguishing marker we can rely on yet —
+  // defer group detection until we have a stable signal). For now, any
+  // selected row is treated as a 1:1 person; group sidebar will light up
+  // only when the center pane itself shows the group participant bar.
+  // TODO: re-enable group detection with a proper new-DOM probe.
+
+  // Header of the active chat (center pane). Holds contact display name.
+  let headerName: string | null = null
+  const headers = document.querySelectorAll('header')
+  for (const h of headers) {
+    const r = h.getBoundingClientRect()
+    if (r.left < 400) continue // skip left-column header
+    const spans = h.querySelectorAll('span[dir="auto"]')
+    for (const s of spans) {
+      const text = (s as HTMLElement).innerText?.trim()
+      if (!text) continue
+      if (text.length < 2 || text.length > 120) continue
+      // Skip generic labels
+      if (/^(Call|Search|Menu|Video call)$/i.test(text)) continue
+      headerName = text
+      break
+    }
+    if (headerName) break
   }
-  return { kind: 'none' }
+
+  // If there's neither a selected row nor a header name, no chat is active
+  if (!selectedRow && !headerName) return { kind: 'none' }
+
+  // Prefer header name (always reflects the OPEN chat). Fall back to row text
+  // for robustness.
+  let raw = headerName
+  if (!raw && selectedRow) {
+    const rowText = (selectedRow as HTMLElement).innerText?.trim()
+    // Row text is "Name HH:MM Last msg preview" — keep first token before the time.
+    const parts = rowText?.split(/\s+\d{1,2}:\d{2}/) ?? []
+    raw = parts[0]?.trim() || rowText || null
+  }
+  if (!raw) return { kind: 'none' }
+
+  // Looks like a phone?  "+56 9 6699 2906" or raw digits → normalize to +E164
+  const phoneDigits = raw.replace(/[^\d+]/g, '')
+  if (/^\+?\d{7,15}$/.test(phoneDigits)) {
+    const phone = phoneDigits.startsWith('+') ? phoneDigits : '+' + phoneDigits
+    return { kind: 'person', phone, name: null }
+  }
+
+  // Otherwise it's a saved contact name
+  return { kind: 'person', phone: null, name: raw }
 }
 
 function getChatNameFromDom(): string | null {
@@ -367,7 +419,7 @@ function tick(): void {
   // Build a stable signature so we only emit when something changed.
   let signature = 'none'
   if (identity.kind === 'person') {
-    signature = 'person:' + identity.phone
+    signature = 'person:' + (identity.phone ?? identity.name ?? '?')
   } else if (identity.kind === 'group') {
     const participants = getGroupParticipants()
 
@@ -417,11 +469,13 @@ function tick(): void {
     return
   }
 
-  // Person
-  const name = getChatNameFromDom()
-  const normalized = identity.phone.startsWith('+') ? identity.phone : '+' + identity.phone
-  console.log('[wa-preload] person chat changed →', normalized, name)
-  ipcRenderer.send('wa:chat:changed', { kind: 'person', phone: normalized, name })
+  // Person — either by phone (unsaved contact) or by name (saved contact).
+  // The backend sidebar-context listener treats both shapes the same: look up
+  // contact_channels by phone first, fall back to outreach_logs.name ILIKE.
+  const name = identity.name ?? getChatNameFromDom()
+  const phone = identity.phone
+  console.log('[wa-preload] person chat changed →', phone ?? '(no-phone)', name ?? '(no-name)')
+  ipcRenderer.send('wa:chat:changed', { kind: 'person', phone, name })
 }
 
 function start(): void {

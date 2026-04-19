@@ -690,6 +690,32 @@ function buildMenu(): void {
         },
       ],
     },
+    {
+      label: 'Developer',
+      submenu: [
+        {
+          label: 'WhatsApp DevTools',
+          accelerator: 'CmdOrCtrl+Alt+W',
+          click: () => whatsappView?.webContents.openDevTools({ mode: 'detach' }),
+        },
+        {
+          label: 'LinkedIn DevTools',
+          accelerator: 'CmdOrCtrl+Alt+L',
+          click: () => linkedinView?.webContents.openDevTools({ mode: 'detach' }),
+        },
+        {
+          label: 'Sidebar DevTools',
+          accelerator: 'CmdOrCtrl+Alt+I',
+          click: () => sidebarView?.webContents.openDevTools({ mode: 'detach' }),
+        },
+        { type: 'separator' },
+        {
+          label: 'Reload WhatsApp',
+          accelerator: 'CmdOrCtrl+Alt+R',
+          click: () => whatsappView?.webContents.reload(),
+        },
+      ],
+    },
     { role: 'windowMenu' },
   ]
   Menu.setApplicationMenu(Menu.buildFromTemplate(template))
@@ -746,8 +772,11 @@ function runCustomInstaller(): void {
   // electron-updater writes to ~/Library/Caches/conversations-updater/ on macOS.
   // Earlier versions of this function used the wrong base path (userData + ..
   // + Caches), which produced ~/Library/Application Support/Caches/... — a
-  // path that never exists. Using app.getPath('cache') gives the correct dir.
-  const cacheDir = path.join(app.getPath('cache'), 'conversations-updater')
+  // path that never exists. Electron's app.getPath() has no 'cache' key; we
+  // derive it from the home dir explicitly.
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const os = require('os') as typeof import('os')
+  const cacheDir = path.join(os.homedir(), 'Library', 'Caches', 'conversations-updater')
   const topLevelZip = path.join(cacheDir, 'update.zip')
   const pendingDir = path.join(cacheDir, 'pending')
   const appPath = app.getPath('exe').replace(/\/Contents\/MacOS\/[^/]+$/, '')
@@ -870,8 +899,12 @@ const BACKFILL_SCAN_SCRIPT = `
       var ts = parseTs(m[1]);
       if (!ts) continue;
       var bubble = el.closest('[data-id]');
+      // 2026-04 WhatsApp update: data-id is now an opaque 20-char hex
+      // (3ABDB9900D5F90F35289) — no more @c.us suffix. We keep it only for
+      // dedupe. Chat-kind scoping happens at the main-process level by
+      // whether the currently-active chat is a 1:1 person or a group.
       var dataId = bubble ? (bubble.getAttribute('data-id') || '') : '';
-      if (!dataId || dataId.indexOf('@c.us') === -1) continue;
+      if (!dataId) continue;
       if (seen.has(dataId)) continue;
       seen.add(dataId);
       var isIn = !!(el.closest('.message-in') || (bubble && bubble.closest('.message-in')));

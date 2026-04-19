@@ -123,7 +123,10 @@ export type ParticipantLookupInput = {
 
 export type WaState =
   | { kind: 'none' }
-  | { kind: 'person'; phone: string; name: string | null }
+  // Since WhatsApp's 2026-04 DOM update, saved contacts expose a name but no
+  // phone. Unsaved chats expose a phone (visible in the row/header). Either
+  // field may be null; the sidebar lookup tries phone first, then name.
+  | { kind: 'person'; phone: string | null; name: string | null }
   | {
       kind: 'group'
       groupId: string
@@ -176,6 +179,7 @@ export type ConvApi = {
   }
   contact: {
     byPhone(phone: string): Promise<ContactDetail | null>
+    byName(name: string): Promise<ContactDetail | null>
     byLinkedinUrl(url: string): Promise<ContactDetail | null>
     logInteraction(input: LogInteractionInput): Promise<WriteResult>
     addValueLog(input: AddValueLogInput): Promise<WriteResult>

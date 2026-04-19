@@ -8,8 +8,8 @@ import type { ContactDetail, GroupParticipant, SidebarContext } from '../conv-ap
 
 type PersonLookupState =
   | { kind: 'idle' }
-  | { kind: 'loading'; phone: string }
-  | { kind: 'not-found'; phone: string; waName: string | null }
+  | { kind: 'loading'; phone: string | null; name: string | null }
+  | { kind: 'not-found'; phone: string | null; waName: string | null }
   | { kind: 'found'; contact: ContactDetail }
   | { kind: 'error'; message: string }
 
@@ -24,11 +24,19 @@ export function MainScreen({ email }: { email: string }) {
   const lastHitPhoneRef = useRef<string | null>(null)
 
   const runPersonLookup = useCallback(
-    async (rawPhone: string, waName: string | null = null) => {
-      setPersonLookup({ kind: 'loading', phone: rawPhone })
+    async (rawPhone: string | null, waName: string | null = null) => {
+      setPersonLookup({ kind: 'loading', phone: rawPhone, name: waName })
       try {
-        lastHitPhoneRef.current = rawPhone
-        const contact = await window.conv.contact.byPhone(rawPhone)
+        lastHitPhoneRef.current = rawPhone ?? waName
+        // Resolution order: phone (most reliable) → name (fallback for saved
+        // contacts on WA's new DOM that hides phones).
+        let contact: ContactDetail | null = null
+        if (rawPhone) {
+          contact = await window.conv.contact.byPhone(rawPhone)
+        }
+        if (!contact && waName) {
+          contact = await window.conv.contact.byName(waName)
+        }
         if (contact) {
           setPersonLookup({ kind: 'found', contact })
         } else {
@@ -63,8 +71,12 @@ export function MainScreen({ email }: { email: string }) {
   }
 
   async function handleRefresh() {
-    if (lastHitPhoneRef.current) {
-      await runPersonLookup(lastHitPhoneRef.current)
+    if (!lastHitPhoneRef.current) return
+    const looksLikePhone = /^\+?\d/.test(lastHitPhoneRef.current)
+    if (looksLikePhone) {
+      await runPersonLookup(lastHitPhoneRef.current, null)
+    } else {
+      await runPersonLookup(null, lastHitPhoneRef.current)
     }
   }
 

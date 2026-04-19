@@ -178,6 +178,8 @@ const api = {
   contact: {
     byPhone: (phone: string): Promise<ContactDetail | null> =>
       ipcRenderer.invoke('contact:byPhone', phone),
+    byName: (name: string): Promise<ContactDetail | null> =>
+      ipcRenderer.invoke('contact:byName', name),
     byLinkedinUrl: (url: string): Promise<ContactDetail | null> =>
       ipcRenderer.invoke('contact:byLinkedinUrl', url),
     logInteraction: (input: LogInteractionInput): Promise<WriteResult> =>
