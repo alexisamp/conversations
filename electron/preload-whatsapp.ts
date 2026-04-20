@@ -101,11 +101,11 @@ function getActiveChatIdentity(): ChatIdentity {
 
   // Header of the active chat (center pane). Holds contact display name.
   let headerName: string | null = null
-  const headers = document.querySelectorAll('header')
+  const headers = Array.from(document.querySelectorAll('header'))
   for (const h of headers) {
     const r = h.getBoundingClientRect()
     if (r.left < 400) continue // skip left-column header
-    const spans = h.querySelectorAll('span[dir="auto"]')
+    const spans = Array.from(h.querySelectorAll('span[dir="auto"]'))
     for (const s of spans) {
       const text = (s as HTMLElement).innerText?.trim()
       if (!text) continue
