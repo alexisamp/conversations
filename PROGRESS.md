@@ -7,7 +7,7 @@
 
 ## Current status (as of 2026-04-19)
 
-**Local HEAD:** `ccf7227 feat(backfill): click 'Click here to get older messages from your phone' to fetch from device`
+**Local HEAD:** `4b4c690 fix(backfill): persistent scroll+click — up to 5 attempts before stopping`
 **Local tag:** `v0.0.7` at HEAD (unpushed — see below)
 **Remote HEAD (origin/master):** still at `b92a858` from 2026-04-18
 **Remote tags:** v0.0.1 – v0.0.6 on GitHub
@@ -26,6 +26,7 @@ Four commits are local-only, and the asar of the installed app has them applied 
 | `837eb03` | Phase 5b: Gemini summaries per 6h window in backfill import + retro-upgrade of `[backfill]` placeholder rows to real summaries |
 | `5f3cfca` | Auto-scroll in Import History: BACKFILL_SCROLL_AND_SCAN_SCRIPT walks chat pane to top, scan after each step, stop after 2 stable scrollHeight readings (max 80 iter). UI has primary 📥 and secondary `quick` |
 | `ccf7227` | Click 'Click here to get older messages from your phone' button when scroll stabilizes — WA only pre-streams a few days; deeper history requires the button click to fetch from the linked phone. Cap raised to 400 iterations. |
+| `4b4c690` | Persistent scroll+click — 5 cycles without new entries before giving up (was 2). Click fires regardless of whether the button was found, to handle the race where the button is mid-render. Cap 400 → 600 iter. |
 
 **To fix the mismatch:** push + build DMG + release v0.0.7 when memory allows. The hot-patched asar works for the author's Mac; wife's Mac (if she ever needs to reinstall) needs the proper DMG.
 
@@ -61,12 +62,13 @@ Four commits are local-only, and the asar of the installed app has them applied 
 | Phase 5b | Gemini summaries per 6h window + retro-upgrade of placeholder rows | `837eb03` | **unpushed, in hot-patched asar** |
 | Auto-scroll | Import History now scrolls chat pane to top. Loads months/years of history in one click. | `5f3cfca` | **unpushed, in hot-patched asar** |
 | Click 'get older' button | WA shows a "Click here to get older messages from your phone" button once in-browser cache is exhausted. Scroll loop now clicks it to pull further back from the linked phone. | `ccf7227` | **unpushed, in hot-patched asar** |
+| Persistent scroll+click (5 attempts) | Up to 5 scroll+click cycles without new entries before stopping (was 2). Handles archives where the button re-renders between fetches. | `4b4c690` | **unpushed, in hot-patched asar** |
 
 ---
 
 ## Open in-flight work 🟡
 
-**In-place asar hot-patch on installed app.** The user's `/Applications/Conversations.app/Contents/Resources/app.asar` was manually re-packed from `dist/` to include the **five** unpushed commits' features. Mappings/summaries in Supabase created via this patched app are real and persistent. But the state is fragile — any future gear-icon-triggered update will *overwrite* the hot-patched asar with whatever is on GitHub (v0.0.6, missing all five features). The fix is to properly release v0.0.7. **Do this first next session when memory allows.**
+**In-place asar hot-patch on installed app.** The user's `/Applications/Conversations.app/Contents/Resources/app.asar` was manually re-packed from `dist/` to include the **six** unpushed commits' features. Mappings/summaries in Supabase created via this patched app are real and persistent. But the state is fragile — any future gear-icon-triggered update will *overwrite* the hot-patched asar with whatever is on GitHub (v0.0.6, missing all six features). The fix is to properly release v0.0.7. **Do this first next session when memory allows.**
 
 **Pending KPI conversation_uniques_per_day planning.** User asked to evaluate the logic of the reThink habits/goals system *before* implementing. Didn't get to read the code — ripgrep hit memory pressure timeouts. Files to inspect first next session:
 - `~/Documents/reThink-2026/src/hooks/useGoals.ts`
