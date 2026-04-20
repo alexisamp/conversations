@@ -59,9 +59,18 @@ export function MapParticipantModal({ participant, onClose, onDone }: Props) {
         lid: participant.lid,
         waName: participant.waName,
       })
+    } else if (participant.waName) {
+      // Neither phone nor LID — fall back to map-once by WhatsApp display
+      // name. Used for SAVED contacts whose phone WA no longer exposes in
+      // the 2026-04 DOM. Future sightings of this exact display name will
+      // auto-match via contact_channels.
+      result = await window.conv.contact.attachWaName({
+        contact_id: contact.id,
+        waName: participant.waName,
+      })
     } else {
       setSaving(false)
-      setError('Participant has neither phone nor LID')
+      setError('Participant has no identifier (phone / LID / WA name)')
       return
     }
 
@@ -86,6 +95,19 @@ export function MapParticipantModal({ participant, onClose, onDone }: Props) {
       await window.conv.contact.attachLid({
         contact_id: result.contactId,
         lid: participant.lid,
+        waName: participant.waName,
+      })
+    } else if (
+      result.ok &&
+      participant.waName &&
+      !participant.phone &&
+      !participant.lid
+    ) {
+      // New record created from a name-only participant (saved WA contact
+      // without visible phone). Attach the WA name so future sightings
+      // auto-match.
+      await window.conv.contact.attachWaName({
+        contact_id: result.contactId,
         waName: participant.waName,
       })
     }

@@ -190,6 +190,7 @@ export type ConvApi = {
     createFromParticipant(input: CreateContactInput): Promise<CreateContactResult>
     attachPhone(input: AttachPhoneInput): Promise<WriteResult>
     attachLid(input: AttachLidInput): Promise<WriteResult>
+    attachWaName(input: { contact_id: string; waName: string }): Promise<WriteResult>
     createFromLinkedinProfile(input: CreateFromLiInput): Promise<CreateContactResult>
     enrichFromLinkedinProfile(input: EnrichFromLiInput): Promise<WriteResult>
   }

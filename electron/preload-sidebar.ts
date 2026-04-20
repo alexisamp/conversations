@@ -198,6 +198,8 @@ const api = {
       ipcRenderer.invoke('contact:attachPhone', input),
     attachLid: (input: AttachLidInput): Promise<WriteResult> =>
       ipcRenderer.invoke('contact:attachLid', input),
+    attachWaName: (input: { contact_id: string; waName: string }): Promise<WriteResult> =>
+      ipcRenderer.invoke('contact:attachWaName', input),
     createFromLinkedinProfile: (input: CreateFromLiInput): Promise<CreateContactResult> =>
       ipcRenderer.invoke('contact:createFromLinkedinProfile', input),
     enrichFromLinkedinProfile: (input: EnrichFromLiInput): Promise<WriteResult> =>

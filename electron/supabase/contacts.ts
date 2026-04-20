@@ -260,6 +260,27 @@ async function findContactByName(name: string): Promise<ContactDetail | null> {
   const q = name.trim()
   if (q.length < 2) return null
   const supabase = getSupabase()
+
+  // Source 0 (highest priority): explicit "WhatsApp display name" mapping
+  // saved when the user links a chat to an existing reThink contact. Uses
+  // the same contact_channels table, channel='whatsapp', with identifier
+  // prefixed 'waname:<exact display name>'. This is the map-once-forever
+  // mechanism for saved contacts whose WhatsApp display name doesn't match
+  // their reThink name (e.g., WA shows "Amoor | USA", reThink "Maria Jose").
+  const wanameKey = 'waname:' + q
+  const { data: wanameMatch } = await supabase
+    .from('contact_channels')
+    .select('outreach_log_id')
+    .eq('channel', 'whatsapp')
+    .eq('channel_identifier', wanameKey)
+    .limit(1)
+    .maybeSingle()
+  if (wanameMatch) {
+    const id = (wanameMatch as { outreach_log_id: string }).outreach_log_id
+    console.log('[contacts] waname exact channel match →', q)
+    return loadContactDetail(id)
+  }
+
   // Exact match first (case-insensitive). Single hit wins.
   const { data: exact } = await supabase
     .from('outreach_logs')
@@ -1103,11 +1124,41 @@ async function attachLidToExistingContact(input: {
   return { ok: true }
 }
 
+async function attachWaNameToExistingContact(input: {
+  contact_id: string
+  waName: string
+}): Promise<WriteResult> {
+  // Store the WhatsApp display name with a "waname:" prefix so it coexists
+  // with phone and lid identifiers in the same channel_identifier column.
+  // This is the map-once-forever mechanism for SAVED contacts whose WA
+  // display name doesn't match their reThink name (WA's 2026-04 DOM update
+  // removed phone numbers from the message stream, so name is all we have).
+  const supabase = getSupabase()
+  const storedIdentifier = 'waname:' + input.waName.trim()
+  const { error } = await supabase.from('contact_channels').insert({
+    outreach_log_id: input.contact_id,
+    channel: 'whatsapp',
+    channel_identifier: storedIdentifier,
+    channel_name: input.waName,
+    verified: true,
+  })
+  if (error) {
+    console.error('[contacts] attachWaName failed:', error)
+    return { ok: false, error: error.message }
+  }
+  return { ok: true }
+}
+
 // ─── IPC registration ────────────────────────────────────────────────────────
 
 export function registerContactIpc(): void {
   ipcMain.handle('contact:byPhone', (_event, phone: string) => findContactByPhone(phone))
   ipcMain.handle('contact:byName', (_event, name: string) => findContactByName(name))
+  ipcMain.handle(
+    'contact:attachWaName',
+    (_event, input: { contact_id: string; waName: string }) =>
+      attachWaNameToExistingContact(input),
+  )
   ipcMain.handle('contact:logInteraction', (_event, input: LogInteractionInput) =>
     logInteraction(input),
   )
