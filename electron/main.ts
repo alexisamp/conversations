@@ -1078,18 +1078,19 @@ const BACKFILL_SCROLL_AND_SCAN_SCRIPT = `
       return { entries: entries, scrolls: 0, clicks: 0, note: 'no-pane' };
     }
 
-    // Tunables. Cap is generous so deep archives (years of history) finish
-    // without manual intervention. Each stable-height pass doesn't count
-    // against us if the "older messages" button then produces new content.
-    var MAX_ITER = 400;    // ~400 scrolls absolute max (~4-5 min)
-    var WAIT_MS = 700;     // time for WA to load older chunk after scrollTop=0
-    var CLICK_WAIT_MS = 1600; // WA needs longer to fetch from phone after click
-    var MAX_CONSECUTIVE_STABLE = 3; // stable readings before a click attempt
-    var MAX_CLICK_FAIL = 2; // stop after this many click attempts that don't add anything
+    // Tunables. The "Click here to get older messages from your phone" button
+    // can appear MANY times in a long archive — each click pulls a new chunk
+    // from the phone, then the button re-appears at the new top once you
+    // scroll up again. Pattern: scroll → click → scroll → click ... until
+    // no new entries arrive after N consecutive attempts.
+    var MAX_ITER = 600;    // absolute safety cap (~6-7 min worst case)
+    var WAIT_MS = 700;     // time for WA to render older chunk after scrollTop=0
+    var CLICK_WAIT_MS = 1800; // WA needs longer to fetch from phone after click
+    var MAX_CONSECUTIVE_STABLE = 2; // scroll-stable readings before first click attempt
+    var MAX_CLICK_ATTEMPTS_NO_PROGRESS = 5; // user rule: try 5 times before giving up
     var stableCount = 0;
-    var consecutiveClickFails = 0;
+    var clickAttemptsNoProgress = 0;
     var lastHeight = pane.scrollHeight;
-    var lastEntryCount = entries.length;
     var scrolls = 0;
     var clicks = 0;
 
@@ -1099,39 +1100,50 @@ const BACKFILL_SCROLL_AND_SCAN_SCRIPT = `
       scanInto(seen, entries);
       scrolls++;
       var h = pane.scrollHeight;
-      if (h === lastHeight) {
-        stableCount++;
-        // When scroll-top is stable we've consumed what's in-browser; try
-        // clicking the "older messages from your phone" button to fetch more.
-        if (stableCount >= MAX_CONSECUTIVE_STABLE) {
-          var beforeClickCount = entries.length;
-          var clicked = clickOlderMessagesButton();
-          if (clicked) {
-            clicks++;
-            await sleep(CLICK_WAIT_MS);
-            scanInto(seen, entries);
-            // Also scroll again to surface freshly-loaded messages at top
-            pane.scrollTop = 0;
-            await sleep(WAIT_MS);
-            scanInto(seen, entries);
-            if (entries.length === beforeClickCount) {
-              consecutiveClickFails++;
-              if (consecutiveClickFails >= MAX_CLICK_FAIL) break;
-            } else {
-              consecutiveClickFails = 0;
-              stableCount = 0;
-              lastHeight = pane.scrollHeight;
-            }
-          } else {
-            // No button found AND scroll is stable → we're truly done
-            break;
-          }
-        }
-      } else {
+      if (h !== lastHeight) {
+        // New chunk auto-streamed in — keep scrolling, don't click yet.
         stableCount = 0;
+        clickAttemptsNoProgress = 0;
         lastHeight = h;
+        continue;
       }
-      lastEntryCount = entries.length;
+
+      stableCount++;
+      if (stableCount < MAX_CONSECUTIVE_STABLE) continue;
+
+      // Scroll-top is stable. Try the "older messages from your phone" button.
+      var beforeAttempt = entries.length;
+      var clicked = clickOlderMessagesButton();
+      if (clicked) clicks++;
+
+      // Whether the click succeeded or not, give WA a chance to fetch from
+      // the phone and surface new content, then scroll + rescan twice to
+      // consume it. Doing this even when the button wasn't found handles
+      // the race where the button is still rendering in a child frame.
+      await sleep(CLICK_WAIT_MS);
+      pane.scrollTop = 0;
+      await sleep(WAIT_MS);
+      scanInto(seen, entries);
+      pane.scrollTop = 0;
+      await sleep(WAIT_MS);
+      scanInto(seen, entries);
+
+      var newEntries = entries.length - beforeAttempt;
+      if (newEntries > 0) {
+        // Progress! Reset counters — we might get more on the next cycle.
+        clickAttemptsNoProgress = 0;
+        stableCount = 0;
+        lastHeight = pane.scrollHeight;
+      } else {
+        clickAttemptsNoProgress++;
+        if (clickAttemptsNoProgress >= MAX_CLICK_ATTEMPTS_NO_PROGRESS) {
+          // 5 cycles in a row with no new messages → we're genuinely done.
+          break;
+        }
+        // Keep the stable counter elevated so the next iter will try
+        // clicking again (rather than expecting another scroll-delta first).
+        stableCount = MAX_CONSECUTIVE_STABLE;
+      }
     }
 
     return { entries: entries, scrolls: scrolls, clicks: clicks };
