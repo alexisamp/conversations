@@ -397,10 +397,13 @@ function BackfillButton({
           (scrollCount ? ` after ${scrollCount} scrolls` : '') +
           ' — summarizing…',
       )
+      const reachedStart =
+        'reachedStart' in scanRes ? (scanRes as { reachedStart: boolean }).reachedStart : false
       const importRes = await window.conv.backfill.importWindows({
         contactId,
         phone: '',
         entries: scanRes.entries,
+        reachedStart,
       })
       if (importRes.error) {
         setResult(`Error: ${importRes.error}`)

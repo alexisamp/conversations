@@ -94,6 +94,7 @@ export type CreateContactInput = {
   linkedin_url: string | null
   phone: string
   waName: string | null
+  referred_by: string | null
 }
 
 export type CreateContactResult =
@@ -844,6 +845,7 @@ async function createContactFromParticipant(
       name: displayName,
       linkedin_url: input.linkedin_url,
       phone: input.phone || null,
+      referred_by: input.referred_by,
       // reThink's status check constraint only accepts these uppercase values:
       // PROSPECT | INTRO | CONNECTED | RECONNECT | ENGAGED | NURTURING | DORMANT
       // PROSPECT is the default entry point for a brand-new contact.

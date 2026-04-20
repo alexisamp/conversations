@@ -90,6 +90,7 @@ export type CreateContactInput = {
   linkedin_url: string | null
   phone: string
   waName: string | null
+  referred_by: string | null
 }
 
 export type CreateContactResult =
@@ -208,6 +209,7 @@ export type ConvApi = {
       entries: HistoricalEntry[]
       scrolls: number
       clicks: number
+      reachedStart: boolean
       error?: string
     }>
     importWindows(input: BackfillImportInput): Promise<BackfillImportResult>
@@ -234,6 +236,7 @@ export interface BackfillImportInput {
   contactId: string
   phone: string
   entries: HistoricalEntry[]
+  reachedStart?: boolean
 }
 
 export interface BackfillImportResult {

@@ -93,6 +93,7 @@ export type CreateContactInput = {
   linkedin_url: string | null
   phone: string
   waName: string | null
+  referred_by: string | null
 }
 
 export type CreateContactResult =
@@ -227,6 +228,7 @@ const api = {
       entries: HistoricalEntry[]
       scrolls: number
       clicks: number
+      reachedStart: boolean
       error?: string
     }> => ipcRenderer.invoke('backfill:scan-with-scroll'),
     importWindows: (
@@ -261,6 +263,7 @@ export interface BackfillImportInput {
   contactId: string
   phone: string
   entries: HistoricalEntry[]
+  reachedStart?: boolean
 }
 
 export interface BackfillImportResult {

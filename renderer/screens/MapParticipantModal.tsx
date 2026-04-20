@@ -18,6 +18,10 @@ export function MapParticipantModal({ participant, onClose, onDone }: Props) {
 
   const [createName, setCreateName] = useState(participant.waName ?? '')
   const [createLinkedin, setCreateLinkedin] = useState('')
+  const [referredBy, setReferredBy] = useState<ContactBrief | null>(null)
+  const [referrerQuery, setReferrerQuery] = useState('')
+  const [referrerResults, setReferrerResults] = useState<ContactBrief[]>([])
+  const [referrerSearching, setReferrerSearching] = useState(false)
 
   // Live search as you type
   useEffect(() => {
@@ -41,6 +45,29 @@ export function MapParticipantModal({ participant, onClose, onDone }: Props) {
       clearTimeout(t)
     }
   }, [query, tab])
+
+  // Live search for the "introduced by" picker (Create tab only)
+  useEffect(() => {
+    if (tab !== 'create' || referredBy) return
+    const q = referrerQuery.trim()
+    if (q.length < 2) {
+      setReferrerResults([])
+      return
+    }
+    let cancelled = false
+    setReferrerSearching(true)
+    const t = setTimeout(async () => {
+      const results = await window.conv.contact.searchByName(q)
+      if (!cancelled) {
+        setReferrerResults(results)
+        setReferrerSearching(false)
+      }
+    }, 200)
+    return () => {
+      cancelled = true
+      clearTimeout(t)
+    }
+  }, [referrerQuery, tab, referredBy])
 
   async function handleAttach(contact: ContactBrief) {
     setSaving(true)
@@ -89,6 +116,7 @@ export function MapParticipantModal({ participant, onClose, onDone }: Props) {
       linkedin_url: createLinkedin.trim() || null,
       phone: participant.phone ?? '',
       waName: participant.waName,
+      referred_by: referredBy?.id ?? null,
     })
     if (result.ok && participant.lid && !participant.phone) {
       // New record created from a LID-only participant; link the LID channel.
@@ -241,6 +269,70 @@ export function MapParticipantModal({ participant, onClose, onDone }: Props) {
               If you paste a LinkedIn URL, reThink fetches job title, company,
               and bio automatically.
             </div>
+
+            <label className="modal-label">
+              Introduced by <span className="muted">(optional — daisy chain)</span>
+              {referredBy ? (
+                <div className="referrer-chip">
+                  <div className="avatar small">
+                    {referredBy.profile_photo_url ? (
+                      <img src={referredBy.profile_photo_url} alt={referredBy.name} />
+                    ) : (
+                      <div className="avatar-initials">{initialsOf(referredBy.name)}</div>
+                    )}
+                  </div>
+                  <span className="referrer-chip-name">{referredBy.name}</span>
+                  <button
+                    type="button"
+                    className="referrer-chip-remove"
+                    onClick={() => { setReferredBy(null); setReferrerQuery('') }}
+                    aria-label="Remove referrer"
+                  >×</button>
+                </div>
+              ) : (
+                <>
+                  <input
+                    className="modal-input"
+                    placeholder="Search for the person who introduced you…"
+                    value={referrerQuery}
+                    onChange={(e) => setReferrerQuery(e.target.value)}
+                  />
+                  {referrerSearching && <div className="empty small">Searching…</div>}
+                  {!referrerSearching && referrerQuery.trim().length >= 2 && referrerResults.length === 0 && (
+                    <div className="empty small">No matches.</div>
+                  )}
+                  {referrerResults.length > 0 && (
+                    <ul className="search-results">
+                      {referrerResults.map((c) => (
+                        <li key={c.id}>
+                          <div className="avatar small">
+                            {c.profile_photo_url ? (
+                              <img src={c.profile_photo_url} alt={c.name} />
+                            ) : (
+                              <div className="avatar-initials">{initialsOf(c.name)}</div>
+                            )}
+                          </div>
+                          <div className="search-result-info">
+                            <div className="search-result-name">{c.name}</div>
+                            <div className="search-result-subtitle">
+                              {[c.job_title, c.company].filter(Boolean).join(' · ') || '—'}
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            className="primary tiny"
+                            onClick={() => { setReferredBy(c); setReferrerResults([]) }}
+                          >
+                            Pick
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </>
+              )}
+            </label>
+
             <button
               className="primary"
               disabled={saving || !createName.trim()}

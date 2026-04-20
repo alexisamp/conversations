@@ -859,6 +859,7 @@ interface BackfillImportInput {
   contactId: string
   phone: string
   entries: HistoricalEntry[]
+  reachedStart?: boolean
 }
 
 interface BackfillImportResult {
@@ -1093,6 +1094,7 @@ const BACKFILL_SCROLL_AND_SCAN_SCRIPT = `
     var lastHeight = pane.scrollHeight;
     var scrolls = 0;
     var clicks = 0;
+    var reachedStart = false;
 
     for (var iter = 0; iter < MAX_ITER; iter++) {
       pane.scrollTop = 0;
@@ -1138,6 +1140,7 @@ const BACKFILL_SCROLL_AND_SCAN_SCRIPT = `
         clickAttemptsNoProgress++;
         if (clickAttemptsNoProgress >= MAX_CLICK_ATTEMPTS_NO_PROGRESS) {
           // 5 cycles in a row with no new messages → we're genuinely done.
+          reachedStart = true;
           break;
         }
         // Keep the stable counter elevated so the next iter will try
@@ -1146,9 +1149,9 @@ const BACKFILL_SCROLL_AND_SCAN_SCRIPT = `
       }
     }
 
-    return { entries: entries, scrolls: scrolls, clicks: clicks };
+    return { entries: entries, scrolls: scrolls, clicks: clicks, reachedStart: reachedStart };
   } catch (e) {
-    return { entries: [], scrolls: 0, clicks: 0, error: String(e && e.message || e) };
+    return { entries: [], scrolls: 0, clicks: 0, reachedStart: false, error: String(e && e.message || e) };
   }
 })()
 `.trim()
@@ -1353,6 +1356,23 @@ async function importBackfillWindows(
     imported++
   }
 
+  // Mark this contact's WhatsApp channel as scanned. Gates the "new/reactivated"
+  // KPI in reThink — without this flag, a freshly-auto-detected contact can't
+  // be safely classified as "new" (could just be an unscanned old chat).
+  try {
+    const { error: cErr } = await client
+      .from('contact_channels')
+      .update({
+        backfilled_at: new Date().toISOString(),
+        backfill_reached_start: input.reachedStart === true,
+      })
+      .eq('outreach_log_id', input.contactId)
+      .eq('channel', 'whatsapp')
+    if (cErr) console.warn('[backfill] contact_channels update failed:', cErr)
+  } catch (e) {
+    console.warn('[backfill] contact_channels update threw:', e)
+  }
+
   return { windowsFound: windows.length, windowsImported: imported, skipped }
 }
 
@@ -1443,6 +1463,7 @@ function registerIpc(): void {
         entries: HistoricalEntry[]
         scrolls: number
         clicks?: number
+        reachedStart?: boolean
         error?: string
         note?: string
       }
@@ -1450,6 +1471,7 @@ function registerIpc(): void {
         '[backfill] scroll-and-scan → entries=' + result.entries.length,
         'scrolls=' + result.scrolls,
         result.clicks ? 'clicks=' + result.clicks : '',
+        result.reachedStart ? 'reached-start' : '',
         result.error ? 'err=' + result.error : '',
         result.note ? 'note=' + result.note : '',
       )
@@ -1457,10 +1479,11 @@ function registerIpc(): void {
         entries: result.entries,
         scrolls: result.scrolls,
         clicks: result.clicks ?? 0,
+        reachedStart: result.reachedStart ?? false,
         error: result.error,
       }
     } catch (err: unknown) {
-      return { entries: [], scrolls: 0, clicks: 0, error: String((err as Error)?.message ?? err) }
+      return { entries: [], scrolls: 0, clicks: 0, reachedStart: false, error: String((err as Error)?.message ?? err) }
     }
   })
 
