@@ -852,6 +852,7 @@ interface HistoricalEntry {
   timestamp: number
   direction: 'inbound' | 'outbound'
   dataId: string
+  text: string | null // body of the message (null for stickers/media without caption)
 }
 
 interface BackfillImportInput {
@@ -899,16 +900,32 @@ const BACKFILL_SCAN_SCRIPT = `
       var ts = parseTs(m[1]);
       if (!ts) continue;
       var bubble = el.closest('[data-id]');
-      // 2026-04 WhatsApp update: data-id is now an opaque 20-char hex
-      // (3ABDB9900D5F90F35289) — no more @c.us suffix. We keep it only for
-      // dedupe. Chat-kind scoping happens at the main-process level by
-      // whether the currently-active chat is a 1:1 person or a group.
       var dataId = bubble ? (bubble.getAttribute('data-id') || '') : '';
       if (!dataId) continue;
       if (seen.has(dataId)) continue;
       seen.add(dataId);
       var isIn = !!(el.closest('.message-in') || (bubble && bubble.closest('.message-in')));
-      entries.push({ timestamp: ts, direction: isIn ? 'inbound' : 'outbound', dataId: dataId });
+      // Extract message text for Gemini summarization (Phase 5b). Prefer
+      // the canonical copyable-text span; fall back to bubble innerText
+      // minus the trailing "HH:MM" timestamp.
+      var text = null;
+      if (bubble) {
+        var cp = bubble.querySelector('span.selectable-text.copyable-text, span.copyable-text, span.selectable-text, div.copyable-text span');
+        if (cp && cp.innerText) {
+          var t = cp.innerText.trim();
+          if (t) text = t;
+        }
+        if (!text) {
+          var raw = (bubble.innerText || '').trim();
+          if (raw) text = raw.replace(/\s*\d{1,2}:\d{2}\s*$/, '').trim() || null;
+        }
+      }
+      entries.push({
+        timestamp: ts,
+        direction: isIn ? 'inbound' : 'outbound',
+        dataId: dataId,
+        text: text,
+      });
     }
     return entries;
   } catch (e) { return []; }
@@ -929,6 +946,10 @@ interface BackfillWindow {
   direction: 'inbound' | 'outbound'
   messageCount: number
   windowEnd: number
+  // Phase 5b: retain the actual message entries so we can hand their text
+  // to Gemini for a real 2-line summary per window, instead of writing the
+  // "[backfill] N mensajes" placeholder.
+  entries: HistoricalEntry[]
 }
 
 function groupInto6HourWindows(entries: HistoricalEntry[]): BackfillWindow[] {
@@ -948,6 +969,7 @@ function groupInto6HourWindows(entries: HistoricalEntry[]): BackfillWindow[] {
       direction: outCount >= inCount ? 'outbound' : 'inbound',
       messageCount: group.length,
       windowEnd: windowStart + SIX_HOURS,
+      entries: [...group],
     })
   }
 
@@ -965,6 +987,29 @@ function groupInto6HourWindows(entries: HistoricalEntry[]): BackfillWindow[] {
 }
 
 /**
+ * Build a Gemini-friendly conversation string from a set of messages in a
+ * single 6h window. Format:
+ *   [HH:MM] Ellos: ...
+ *   [HH:MM] Yo: ...
+ *
+ * Drops messages with no text (stickers, media-no-caption). Returns null
+ * when the window has zero substantive text.
+ */
+function buildConversationText(win: BackfillWindow): string | null {
+  const lines: string[] = []
+  for (const e of win.entries) {
+    if (!e.text) continue
+    const d = new Date(e.timestamp)
+    const hh = String(d.getHours()).padStart(2, '0')
+    const mm = String(d.getMinutes()).padStart(2, '0')
+    const speaker = e.direction === 'outbound' ? 'Yo' : 'Ellos'
+    lines.push(`[${hh}:${mm}] ${speaker}: ${e.text}`)
+  }
+  if (lines.length === 0) return null
+  return lines.join('\n')
+}
+
+/**
  * Core of the backfill action. For each 6h window, check whether an
  * interaction already exists for that day/contact/whatsapp (to stay
  * idempotent) and if not, insert {interaction, extension_interaction_window}
@@ -976,6 +1021,7 @@ async function importBackfillWindows(
   input: BackfillImportInput,
 ): Promise<BackfillImportResult> {
   const { getSupabase } = await import('./supabase/client')
+  const { summarizeSession } = await import('./ai/gemini')
   const client = getSupabase()
 
   const {
@@ -992,18 +1038,59 @@ async function importBackfillWindows(
   for (const win of windows) {
     const interactionDate = new Date(win.timestamp).toISOString().split('T')[0]
 
-    // Idempotency: skip if an interaction for this (user, contact, day, whatsapp) exists
+    // Idempotency + upgrade:
+    //   - No row yet  → INSERT
+    //   - Row exists with placeholder notes ([backfill] ...)  → UPDATE with
+    //     Gemini summary (retroactive upgrade from phase 5a → 5b)
+    //   - Row exists with real notes  → skip (never overwrite user content)
     const { data: existing } = await client
       .from('interactions')
-      .select('id')
+      .select('id, notes')
       .eq('user_id', user.id)
       .eq('contact_id', input.contactId)
       .eq('interaction_date', interactionDate)
       .eq('type', 'whatsapp')
       .maybeSingle()
 
+    // Phase 5b: build the real conversation text and ask Gemini for a
+    // 2-line summary. Falls back to the placeholder if text is empty
+    // (e.g. a window of only stickers) or Gemini call fails.
+    const conversationText = buildConversationText(win)
+    let notes = `[backfill] ${win.messageCount} mensajes`
+    if (conversationText) {
+      try {
+        const summary = await summarizeSession(conversationText)
+        if (summary && summary.trim()) {
+          notes = summary.trim()
+        }
+      } catch (err) {
+        console.warn('[backfill] gemini summary failed:', err)
+      }
+    }
+
     if (existing) {
-      skipped++
+      const existingNotes = (existing as { notes: string | null }).notes ?? ''
+      const isPlaceholder = /^\[backfill\]/.test(existingNotes.trim())
+      if (!isPlaceholder) {
+        skipped++
+        continue
+      }
+      // Only upgrade if we actually got a real summary from Gemini. If the
+      // new notes are still a [backfill] placeholder (e.g. no text in this
+      // window), leave the DB value as-is and just count it as skipped.
+      if (/^\[backfill\]/.test(notes)) {
+        skipped++
+        continue
+      }
+      const { error: uErr } = await client
+        .from('interactions')
+        .update({ notes })
+        .eq('id', (existing as { id: string }).id)
+      if (uErr) {
+        console.warn('[backfill] interaction update failed:', uErr)
+        continue
+      }
+      imported++
       continue
     }
 
@@ -1014,7 +1101,7 @@ async function importBackfillWindows(
         contact_id: input.contactId,
         type: 'whatsapp',
         direction: win.direction,
-        notes: `[backfill] ${win.messageCount} mensajes`,
+        notes,
         interaction_date: interactionDate,
       })
       .select('id')
