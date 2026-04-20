@@ -226,6 +226,7 @@ const api = {
     scanWithScroll: (): Promise<{
       entries: HistoricalEntry[]
       scrolls: number
+      clicks: number
       error?: string
     }> => ipcRenderer.invoke('backfill:scan-with-scroll'),
     importWindows: (

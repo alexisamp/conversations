@@ -1027,6 +1027,47 @@ const BACKFILL_SCROLL_AND_SCAN_SCRIPT = `
     return added;
   }
 
+  function clickOlderMessagesButton() {
+    // WhatsApp Web shows "Click here to get older messages from your phone"
+    // when scroll hits top AND there's more on the device not yet streamed.
+    // The button is a clickable div with exactly that text (Spanish variants
+    // exist too). We do a broad text match across buttons/divs/spans in main.
+    var main = document.querySelector('#main') || document.body;
+    var needles = [
+      'get older messages from your phone',
+      'obtener mensajes más antiguos',
+      'cargar mensajes anteriores',
+      'older messages',
+    ];
+    var candidates = main.querySelectorAll('button, [role="button"], div, span');
+    for (var i = 0; i < candidates.length; i++) {
+      var el = candidates[i];
+      var t = (el.innerText || '').toLowerCase();
+      if (t.length > 120) continue; // skip long elements
+      for (var j = 0; j < needles.length; j++) {
+        if (t.indexOf(needles[j]) !== -1) {
+          try {
+            // Click the most specific element (the leaf), which is usually a span.
+            // We still dispatch on the outer clickable — walk up to nearest
+            // button/[role=button] or use the matched el.
+            var target = el;
+            var parent = el;
+            for (var k = 0; k < 5; k++) {
+              if (!parent) break;
+              if (parent.tagName === 'BUTTON' || parent.getAttribute('role') === 'button') {
+                target = parent; break;
+              }
+              parent = parent.parentElement;
+            }
+            target.click();
+            return true;
+          } catch (_) { /* swallow */ }
+        }
+      }
+    }
+    return false;
+  }
+
   try {
     var seen = new Set();
     var entries = [];
@@ -1034,14 +1075,23 @@ const BACKFILL_SCROLL_AND_SCAN_SCRIPT = `
 
     var pane = pickPane();
     if (!pane) {
-      return { entries: entries, scrolls: 0, note: 'no-pane' };
+      return { entries: entries, scrolls: 0, clicks: 0, note: 'no-pane' };
     }
 
-    var MAX_ITER = 80;     // safety cap: ~80 scrolls max
-    var WAIT_MS = 700;     // time for WA to load older chunk
+    // Tunables. Cap is generous so deep archives (years of history) finish
+    // without manual intervention. Each stable-height pass doesn't count
+    // against us if the "older messages" button then produces new content.
+    var MAX_ITER = 400;    // ~400 scrolls absolute max (~4-5 min)
+    var WAIT_MS = 700;     // time for WA to load older chunk after scrollTop=0
+    var CLICK_WAIT_MS = 1600; // WA needs longer to fetch from phone after click
+    var MAX_CONSECUTIVE_STABLE = 3; // stable readings before a click attempt
+    var MAX_CLICK_FAIL = 2; // stop after this many click attempts that don't add anything
     var stableCount = 0;
+    var consecutiveClickFails = 0;
     var lastHeight = pane.scrollHeight;
+    var lastEntryCount = entries.length;
     var scrolls = 0;
+    var clicks = 0;
 
     for (var iter = 0; iter < MAX_ITER; iter++) {
       pane.scrollTop = 0;
@@ -1051,16 +1101,42 @@ const BACKFILL_SCROLL_AND_SCAN_SCRIPT = `
       var h = pane.scrollHeight;
       if (h === lastHeight) {
         stableCount++;
-        if (stableCount >= 2) break;    // no more history to load
+        // When scroll-top is stable we've consumed what's in-browser; try
+        // clicking the "older messages from your phone" button to fetch more.
+        if (stableCount >= MAX_CONSECUTIVE_STABLE) {
+          var beforeClickCount = entries.length;
+          var clicked = clickOlderMessagesButton();
+          if (clicked) {
+            clicks++;
+            await sleep(CLICK_WAIT_MS);
+            scanInto(seen, entries);
+            // Also scroll again to surface freshly-loaded messages at top
+            pane.scrollTop = 0;
+            await sleep(WAIT_MS);
+            scanInto(seen, entries);
+            if (entries.length === beforeClickCount) {
+              consecutiveClickFails++;
+              if (consecutiveClickFails >= MAX_CLICK_FAIL) break;
+            } else {
+              consecutiveClickFails = 0;
+              stableCount = 0;
+              lastHeight = pane.scrollHeight;
+            }
+          } else {
+            // No button found AND scroll is stable → we're truly done
+            break;
+          }
+        }
       } else {
         stableCount = 0;
         lastHeight = h;
       }
+      lastEntryCount = entries.length;
     }
 
-    return { entries: entries, scrolls: scrolls };
+    return { entries: entries, scrolls: scrolls, clicks: clicks };
   } catch (e) {
-    return { entries: [], scrolls: 0, error: String(e && e.message || e) };
+    return { entries: [], scrolls: 0, clicks: 0, error: String(e && e.message || e) };
   }
 })()
 `.trim()
@@ -1351,20 +1427,28 @@ function registerIpc(): void {
       const result = (await whatsappView.webContents.executeJavaScript(
         BACKFILL_SCROLL_AND_SCAN_SCRIPT,
         true,
-      )) as { entries: HistoricalEntry[]; scrolls: number; error?: string; note?: string }
+      )) as {
+        entries: HistoricalEntry[]
+        scrolls: number
+        clicks?: number
+        error?: string
+        note?: string
+      }
       console.log(
         '[backfill] scroll-and-scan → entries=' + result.entries.length,
         'scrolls=' + result.scrolls,
+        result.clicks ? 'clicks=' + result.clicks : '',
         result.error ? 'err=' + result.error : '',
         result.note ? 'note=' + result.note : '',
       )
       return {
         entries: result.entries,
         scrolls: result.scrolls,
+        clicks: result.clicks ?? 0,
         error: result.error,
       }
     } catch (err: unknown) {
-      return { entries: [], scrolls: 0, error: String((err as Error)?.message ?? err) }
+      return { entries: [], scrolls: 0, clicks: 0, error: String((err as Error)?.message ?? err) }
     }
   })
 
