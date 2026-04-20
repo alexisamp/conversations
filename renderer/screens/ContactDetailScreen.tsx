@@ -371,13 +371,17 @@ function BackfillButton({
   onImported: () => void
 }) {
   const [busy, setBusy] = useState(false)
+  const [phase, setPhase] = useState<string>('')
   const [result, setResult] = useState<string | null>(null)
 
-  async function handleImport() {
+  async function runImport(withScroll: boolean) {
     setBusy(true)
     setResult(null)
+    setPhase(withScroll ? 'Scrolling chat to the top…' : 'Scanning visible messages…')
     try {
-      const scanRes = await window.conv.backfill.scanHistory()
+      const scanRes = withScroll
+        ? await window.conv.backfill.scanWithScroll()
+        : await window.conv.backfill.scanHistory()
       if (scanRes.error) {
         setResult(`Error: ${scanRes.error}`)
         return
@@ -386,6 +390,13 @@ function BackfillButton({
         setResult('No messages found — open the chat first')
         return
       }
+      const scrollCount =
+        'scrolls' in scanRes ? (scanRes as { scrolls: number }).scrolls : 0
+      setPhase(
+        `Found ${scanRes.entries.length} messages` +
+          (scrollCount ? ` after ${scrollCount} scrolls` : '') +
+          ' — summarizing…',
+      )
       const importRes = await window.conv.backfill.importWindows({
         contactId,
         phone: '',
@@ -404,6 +415,7 @@ function BackfillButton({
       setResult(err instanceof Error ? err.message : 'Import failed')
     } finally {
       setBusy(false)
+      setPhase('')
     }
   }
 
@@ -411,13 +423,22 @@ function BackfillButton({
     <div className="backfill-wrap">
       <button
         className="section-action"
-        onClick={handleImport}
+        onClick={() => runImport(true)}
         disabled={busy}
-        title={`Import the visible history of the open chat for ${contactName}`}
+        title={`Scroll ${contactName}'s chat to load all history, then import with Gemini summaries`}
       >
-        {busy ? 'Importing…' : '📥 Import history'}
+        {busy ? '📥 …' : '📥 Import history'}
       </button>
-      {result && <span className="backfill-result">{result}</span>}
+      <button
+        className="section-action-ghost"
+        onClick={() => runImport(false)}
+        disabled={busy}
+        title="Scan only what's currently rendered (no scrolling)"
+      >
+        quick
+      </button>
+      {phase && <span className="backfill-result">{phase}</span>}
+      {!phase && result && <span className="backfill-result">{result}</span>}
     </div>
   )
 }

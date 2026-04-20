@@ -204,6 +204,11 @@ export type ConvApi = {
   }
   backfill: {
     scanHistory(): Promise<{ entries: HistoricalEntry[]; error?: string }>
+    scanWithScroll(): Promise<{
+      entries: HistoricalEntry[]
+      scrolls: number
+      error?: string
+    }>
     importWindows(input: BackfillImportInput): Promise<BackfillImportResult>
   }
   li: {

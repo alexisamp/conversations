@@ -1306,3 +1306,21 @@ body {
   color: var(--shuttle);
   font-family: ui-monospace, "SF Mono", Menlo, monospace;
 }
+
+.section-action-ghost {
+  background: transparent;
+  border: 1px dashed var(--shuttle);
+  color: var(--shuttle);
+  padding: 3px 8px;
+  font-size: 10px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.section-action-ghost:hover:not(:disabled) {
+  color: var(--burnham);
+  border-color: var(--burnham);
+}
+.section-action-ghost:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}

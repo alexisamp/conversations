@@ -871,6 +871,13 @@ interface BackfillImportResult {
 // Script injected into WhatsApp's webContents via executeJavaScript. Must be
 // SELF-CONTAINED (no outer-scope references) because it runs in the page's
 // main world, not in our preload's isolated context.
+//
+// Two flavors:
+//   - BACKFILL_SCAN_SCRIPT: single-pass scan of whatever WA has preloaded.
+//     Fast; returns immediately. Used when user wants to skip scrolling.
+//   - BACKFILL_SCROLL_AND_SCAN_SCRIPT: scroll chat pane to top until WA stops
+//     loading older messages, then scan. Can take 30+ seconds for chats with
+//     many months of history; returns ALL visible messages after the scroll.
 const BACKFILL_SCAN_SCRIPT = `
 (function() {
   function parseTs(s) {
@@ -929,6 +936,132 @@ const BACKFILL_SCAN_SCRIPT = `
     }
     return entries;
   } catch (e) { return []; }
+})()
+`.trim()
+
+// Same scanner but wrapped in an auto-scroll loop. Returns a Promise to the
+// host (executeJavaScript unwraps it). Scrolls the chat pane to top, waits
+// for WA to load older messages, rescans, repeats until we hit either:
+//   - stable scroll height for 2 consecutive iterations (nothing new loading)
+//   - max iterations (safety cap, ~60s worth of scrolling)
+//
+// The DOM observation is tricky because WA virtualizes the message list —
+// old messages get recycled out of the DOM as you scroll. We capture entries
+// into our Set on every pass, so even if WA removes them from the DOM later,
+// we still have them.
+const BACKFILL_SCROLL_AND_SCAN_SCRIPT = `
+(async function() {
+  function parseTs(s) {
+    var c = s.lastIndexOf(','); if (c === -1) return null;
+    var t = s.slice(0, c).trim(), d = s.slice(c + 1).trim();
+    var p = d.split('/'); if (p.length !== 3) return null;
+    var p0 = parseInt(p[0]), p1 = parseInt(p[1]), y = parseInt(p[2]);
+    if (isNaN(y) || p[2].length !== 4) return null;
+    var mo, da;
+    if (p0 > 12) { da = p0; mo = p1; } else { mo = p0; da = p1; }
+    var tm = t.match(/(\\d+):(\\d+)/); if (!tm) return null;
+    var h = parseInt(tm[1]), mi = parseInt(tm[2]);
+    if (/p[.\\s]*m/i.test(t) && h !== 12) h += 12;
+    else if (/a[.\\s]*m/i.test(t) && h === 12) h = 0;
+    var dt = new Date(y, mo - 1, da, h, mi);
+    return isNaN(dt.getTime()) ? null : dt.getTime();
+  }
+  function sleep(ms) { return new Promise(function(r) { setTimeout(r, ms); }); }
+  function pickPane() {
+    // Find the scrollable messages pane. Several candidate selectors across
+    // WA versions; pick the first one that actually has a non-zero scrollHeight.
+    var candidates = [
+      'div.copyable-area [role="application"]',
+      'div.copyable-area',
+      '#main [role="application"]',
+      '#main div[data-tab]',
+    ];
+    for (var i = 0; i < candidates.length; i++) {
+      var el = document.querySelector(candidates[i]);
+      if (el && el.scrollHeight > el.clientHeight) return el;
+    }
+    // Fallback: find any div inside the right-hand area with a scrollbar.
+    var divs = document.querySelectorAll('div');
+    var best = null, bestArea = 0;
+    for (var i = 0; i < divs.length; i++) {
+      var d = divs[i];
+      var r = d.getBoundingClientRect();
+      if (r.left < 400) continue; // skip left sidebar
+      if (d.scrollHeight <= d.clientHeight) continue;
+      var a = r.width * r.height;
+      if (a > bestArea) { bestArea = a; best = d; }
+    }
+    return best;
+  }
+  function scanInto(seen, entries) {
+    var els = document.querySelectorAll('[data-pre-plain-text]');
+    var added = 0;
+    for (var i = 0; i < els.length; i++) {
+      var el = els[i];
+      var pre = el.getAttribute('data-pre-plain-text') || '';
+      var m = pre.match(/\\[([^\\]]+)\\]/);
+      if (!m) continue;
+      var ts = parseTs(m[1]);
+      if (!ts) continue;
+      var bubble = el.closest('[data-id]');
+      var dataId = bubble ? (bubble.getAttribute('data-id') || '') : '';
+      if (!dataId) continue;
+      if (seen.has(dataId)) continue;
+      seen.add(dataId);
+      added++;
+      var isIn = !!(el.closest('.message-in') || (bubble && bubble.closest('.message-in')));
+      var text = null;
+      if (bubble) {
+        var cp = bubble.querySelector('span.selectable-text.copyable-text, span.copyable-text, span.selectable-text, div.copyable-text span');
+        if (cp && cp.innerText) {
+          var tx = cp.innerText.trim();
+          if (tx) text = tx;
+        }
+        if (!text) {
+          var raw = (bubble.innerText || '').trim();
+          if (raw) text = raw.replace(/\\s*\\d{1,2}:\\d{2}\\s*$/, '').trim() || null;
+        }
+      }
+      entries.push({ timestamp: ts, direction: isIn ? 'inbound' : 'outbound', dataId: dataId, text: text });
+    }
+    return added;
+  }
+
+  try {
+    var seen = new Set();
+    var entries = [];
+    scanInto(seen, entries); // initial pass
+
+    var pane = pickPane();
+    if (!pane) {
+      return { entries: entries, scrolls: 0, note: 'no-pane' };
+    }
+
+    var MAX_ITER = 80;     // safety cap: ~80 scrolls max
+    var WAIT_MS = 700;     // time for WA to load older chunk
+    var stableCount = 0;
+    var lastHeight = pane.scrollHeight;
+    var scrolls = 0;
+
+    for (var iter = 0; iter < MAX_ITER; iter++) {
+      pane.scrollTop = 0;
+      await sleep(WAIT_MS);
+      scanInto(seen, entries);
+      scrolls++;
+      var h = pane.scrollHeight;
+      if (h === lastHeight) {
+        stableCount++;
+        if (stableCount >= 2) break;    // no more history to load
+      } else {
+        stableCount = 0;
+        lastHeight = h;
+      }
+    }
+
+    return { entries: entries, scrolls: scrolls };
+  } catch (e) {
+    return { entries: [], scrolls: 0, error: String(e && e.message || e) };
+  }
 })()
 `.trim()
 
@@ -1210,6 +1343,28 @@ function registerIpc(): void {
       return { entries }
     } catch (err: unknown) {
       return { entries: [], error: String((err as Error)?.message ?? err) }
+    }
+  })
+  ipcMain.handle('backfill:scan-with-scroll', async () => {
+    if (!whatsappView) return { entries: [] as HistoricalEntry[], error: 'wa-view-missing' }
+    try {
+      const result = (await whatsappView.webContents.executeJavaScript(
+        BACKFILL_SCROLL_AND_SCAN_SCRIPT,
+        true,
+      )) as { entries: HistoricalEntry[]; scrolls: number; error?: string; note?: string }
+      console.log(
+        '[backfill] scroll-and-scan → entries=' + result.entries.length,
+        'scrolls=' + result.scrolls,
+        result.error ? 'err=' + result.error : '',
+        result.note ? 'note=' + result.note : '',
+      )
+      return {
+        entries: result.entries,
+        scrolls: result.scrolls,
+        error: result.error,
+      }
+    } catch (err: unknown) {
+      return { entries: [], scrolls: 0, error: String((err as Error)?.message ?? err) }
     }
   })
 

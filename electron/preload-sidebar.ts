@@ -223,6 +223,11 @@ const api = {
   backfill: {
     scanHistory: (): Promise<{ entries: HistoricalEntry[]; error?: string }> =>
       ipcRenderer.invoke('backfill:scan-history'),
+    scanWithScroll: (): Promise<{
+      entries: HistoricalEntry[]
+      scrolls: number
+      error?: string
+    }> => ipcRenderer.invoke('backfill:scan-with-scroll'),
     importWindows: (
       input: BackfillImportInput,
     ): Promise<BackfillImportResult> =>
