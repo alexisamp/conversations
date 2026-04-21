@@ -352,6 +352,21 @@ function scrapeCompanyInfo(): { name: string | null; url: string | null; logoUrl
     return stripped
   }
 
+  // A /company/ anchor's innerText is only a valid company NAME when it
+  // looks like a noun phrase (short, no "follow"/"employees"/"see all"
+  // sentence patterns). LI uses /company/ anchors for many non-name
+  // contexts on a person profile: "Viviana & 454 other connections follow
+  // this page", "See all employees on LinkedIn", etc. — all of which have
+  // valid /company/<slug>/ hrefs but their text is NOT the company name.
+  function looksLikeCompanyName(t: string): boolean {
+    if (!t || t.length < 2 || t.length > 60) return false
+    if (/\b(connections?\s+follow|followers\s+follow|follow\s+this\s+page|seguidores\s+siguen)\b/i.test(t)) return false
+    if (/\b(employees?\s+on\s+linkedin|empleados?\s+en\s+linkedin|associated\s+members|miembros\s+asociados)\b/i.test(t)) return false
+    if (/^(see\s+all|ver\s+todos?|visit\s+|show\s+more)/i.test(t)) return false
+    if (/\s+&\s+\d+\s+(other|otr[oa]s?)/i.test(t)) return false  // "X & 454 other..."
+    return true
+  }
+
   // Try to extract a logo URL from <img> descendants of el, preferring
   // company-logo-shaped srcs and avoiding the profile photo.
   function pickLogo(el: Element): string | null {
@@ -417,12 +432,19 @@ function scrapeCompanyInfo(): { name: string | null; url: string | null; logoUrl
     }
   }
 
-  // b) top-card /company/ anchor text (when the role IS a real anchor)
+  // b) top-card /company/ anchor text (when the role IS a real anchor).
+  // Reject anchors whose text is a follow-this-page / connections-follow /
+  // see-all-employees sentence — LI uses /company/ hrefs for many
+  // non-name contexts.
   if (!name) {
     const topAnchors = Array.from(scope.querySelectorAll<HTMLAnchorElement>('a[href*="/company/"]'))
     for (const a of topAnchors) {
       const text = cleanText(a)
-      if (text && !EDUCATION_KEYWORD_RE.test(text)) { name = text; break }
+      if (!text) continue
+      if (EDUCATION_KEYWORD_RE.test(text)) continue
+      if (!looksLikeCompanyName(text)) continue
+      name = text
+      break
     }
   }
 
@@ -459,12 +481,15 @@ function scrapeCompanyInfo(): { name: string | null; url: string | null; logoUrl
     }
   }
 
-  // Pass 2: first non-education /company/ anchor anywhere in <main>.
-  // Used when we have no name but still want to give the caller SOMETHING.
+  // Pass 2: first /company/ anchor whose innerText looks like a clean
+  // company name (not a "follow this page" sentence). Used when name is
+  // still null after step 1 OR when we want SOMETHING to feed to the
+  // caller's fallbacks.
   for (const a of allAnchors) {
     const t = cleanText(a)
     if (!t) continue
     if (EDUCATION_KEYWORD_RE.test(t)) continue
+    if (!looksLikeCompanyName(t)) continue
     const url = normalizeUrl(a.href)
     const row = a.closest('li, section, div') ?? a
     const logoUrl = pickLogo(row)
