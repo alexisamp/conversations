@@ -156,11 +156,14 @@ const COMPANY_SCRAPE_SCRIPT = `
     }
   }
 
-  // ── Employees on LinkedIn (more accurate than the bucket) ───
-  // LI About page shows "N employees on LinkedIn" right below the size range.
+  // ── Associated members (actual employee count — more accurate than bucket) ──
+  // LI About page shows "N associated members" right below the size range
+  // (e.g. "11-50 employees" + "104 associated members"). This is the REAL
+  // count; the bucket range often lags years behind. Different from
+  // followers (those are external subscribers, not employees).
   let employeesOnLinkedIn = null
   const bodyText = document.body.innerText || ''
-  const em = bodyText.match(/([\\d.,]+)\\s+(employees on linkedin|empleados en linkedin)/i)
+  const em = bodyText.match(/([\\d.,]+)\\s+(associated members|miembros asociados|employees on linkedin|empleados en linkedin)/i)
   if (em) {
     employeesOnLinkedIn = parseInt(em[1].replace(/[^\\d]/g, ''), 10) || null
   }
