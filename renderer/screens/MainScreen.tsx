@@ -217,7 +217,7 @@ function PersonNotFound({
   waName,
   onCreated,
 }: {
-  phone: string
+  phone: string | null
   waName: string | null
   onCreated: () => void
 }) {
@@ -236,7 +236,7 @@ function PersonNotFound({
     // Invalidate the phone→contactId cache in the main process so
     // the next WA message picks up the new contactId and sessions
     // get properly linked.
-    window.conv.wa.invalidatePhoneCache(phone)
+    if (phone) window.conv.wa.invalidatePhoneCache(phone)
     onCreated()
   }
 
