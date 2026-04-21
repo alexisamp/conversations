@@ -5,30 +5,16 @@
 
 ---
 
-## Current status (as of 2026-04-19)
+## Current status (as of 2026-04-20)
 
-**Local HEAD:** `4b4c690 fix(backfill): persistent scroll+click — up to 5 attempts before stopping`
-**Local tag:** `v0.0.7` at HEAD (unpushed — see below)
-**Remote HEAD (origin/master):** still at `b92a858` from 2026-04-18
-**Remote tags:** v0.0.1 – v0.0.6 on GitHub
-**Latest GH Release:** [v0.0.6](https://github.com/alexisamp/conversations/releases/tag/v0.0.6) — DMG published with old code
-**User's installed app:** `/Applications/Conversations.app` reports v0.0.6 in Info.plist, but its `app.asar` has been **hot-patched in place** with a fresh build that contains all of v0.0.7's features (see Local vs Remote mismatch).
+**Local HEAD:** `07fbbd4 chore: bump to v0.0.9`
+**Latest GH Release:** [v0.0.9](https://github.com/alexisamp/conversations/releases/tag/v0.0.9) — built + published by GH Actions (macos-latest runner, ~1.5 min, no local memory needed)
+**Release pipeline:** `.github/workflows/release.yml` — tag push `v*` → build → electron-builder publish → auto-promote draft → done
 **Working tree:** clean.
 
-### Local vs Remote mismatch
+### The hot-patch asar era is over
 
-Four commits are local-only, and the asar of the installed app has them applied via a `npx asar extract → copy dist → npx asar pack` swap:
-
-| Commit | Contents |
-|---|---|
-| `5f3f476` | `preload-whatsapp` Array.from for NodeList iteration (strict tsc fix) |
-| `60f417d` | `attachWaName` map-once for saved WA contacts (new contact_channels row with `channel_identifier='waname:<name>'`) + findContactByName checks this channel before outreach_logs |
-| `837eb03` | Phase 5b: Gemini summaries per 6h window in backfill import + retro-upgrade of `[backfill]` placeholder rows to real summaries |
-| `5f3cfca` | Auto-scroll in Import History: BACKFILL_SCROLL_AND_SCAN_SCRIPT walks chat pane to top, scan after each step, stop after 2 stable scrollHeight readings (max 80 iter). UI has primary 📥 and secondary `quick` |
-| `ccf7227` | Click 'Click here to get older messages from your phone' button when scroll stabilizes — WA only pre-streams a few days; deeper history requires the button click to fetch from the linked phone. Cap raised to 400 iterations. |
-| `4b4c690` | Persistent scroll+click — 5 cycles without new entries before giving up (was 2). Click fires regardless of whether the button was found, to handle the race where the button is mid-render. Cap 400 → 600 iter. |
-
-**To fix the mismatch:** push + build DMG + release v0.0.7 when memory allows. The hot-patched asar works for the author's Mac; wife's Mac (if she ever needs to reinstall) needs the proper DMG.
+All features that used to live in a local-only `app.asar` hot-patch are now on GitHub Releases (v0.0.8 + v0.0.9). The author's installed app auto-updates through `electron-updater` — no more manual asar packing.
 
 ---
 
@@ -68,16 +54,7 @@ Four commits are local-only, and the asar of the installed app has them applied 
 
 ## Open in-flight work 🟡
 
-**In-place asar hot-patch on installed app.** The user's `/Applications/Conversations.app/Contents/Resources/app.asar` was manually re-packed from `dist/` to include the **six** unpushed commits' features. Mappings/summaries in Supabase created via this patched app are real and persistent. But the state is fragile — any future gear-icon-triggered update will *overwrite* the hot-patched asar with whatever is on GitHub (v0.0.6, missing all six features). The fix is to properly release v0.0.7. **Do this first next session when memory allows.**
-
-**Pending KPI conversation_uniques_per_day planning.** User asked to evaluate the logic of the reThink habits/goals system *before* implementing. Didn't get to read the code — ripgrep hit memory pressure timeouts. Files to inspect first next session:
-- `~/Documents/reThink-2026/src/hooks/useGoals.ts`
-- `~/Documents/reThink-2026/src/components/GoalKPIWidget.tsx`
-- `~/Documents/reThink-2026/src/components/WeeklyGoalsModal.tsx`
-- `~/Documents/reThink-2026/src/screens/GoalDetail.tsx`
-- search for `updateNetworkingHabit` and `tracks_outreach` across reThink source
-
-Goal is to understand: (a) how a new `conversation_uniques_per_day` habit would plug into the existing weekly-goal pipeline, (b) whether the habit schema supports adding a new type without a DB migration, (c) the mental model we want (per-day unique-contact count from `interactions` where type='whatsapp'). Discuss with user before writing any code.
+**KPI validation.** Weekly goals, schema, and UI are all shipped (see Phases 6 and 9 below). Validation pending: the user needs to (a) tag existing Tier 1/2 contacts via the People table bulk tagger or the ContactDetailDrawer tier selector in reThink, (b) use Conversations' Import History and the "Introduced by" picker for a week or two, then (c) check whether Goal B (Tier 1/2 touches, target 10) and Goal C (Pipeline expansion, target 5) move as expected in WeeklyPulse.
 
 ---
 
@@ -85,13 +62,21 @@ Goal is to understand: (a) how a new `conversation_uniques_per_day` habit would 
 
 | # | What | Est. | Why now |
 |---|---|---|---|
-| **v0.0.7 release** | Push master + tags, package DMG, `gh release create v0.0.7` | 15 min when memory OK | Back up the four unpushed commits + ship proper auto-updatable DMG. Blocked today by persistent memory pressure. |
-| 6 | New KPI `conversation_uniques_per_day` wired to reThink weekly goals | 1-2h | Counts distinct contacts with ≥1 closed session per day. Consumed by `useHabits.ts` in reThink — needs investigation of schema (ripgrep timed out under memory pressure). |
-| 5.1 | Upload LI photos to Supabase Storage | 1h | `media.licdn.com` URLs expire; port `uploadLinkedInPhotoFromBase64` from extension |
-| 5.2 | Deep LI enrichment + fix `location` and `company` scraping | 3-4h | See Known issue #1 |
-| Re-enable group detection | New DOM-based group probe (old one used `@g.us` in data-id which is gone) | 1-2h | Current groups show "No active chat" |
-| UX-1 | Full UI polish pass — typography, density, spacing, animations, maybe dark mode | 1 day | User explicitly asked |
-| 8 | Remove WhatsApp content-script from Chrome extension (`~/Documents/reThink-2026/extension/`) | 15 min | Prevents duplicate interactions |
+| Re-enable group detection | New DOM-based group probe (old one used `@g.us` in data-id which is gone) | 1-2h | Current groups show "No active chat". Low priority unless the author uses WA groups much. |
+| UX-1 | Full UI polish pass — typography, density, spacing, animations, maybe dark mode | 1 day | Discretionary. Author explicitly asked at some point. |
+| Referred-by picker in reThink | Today only Conversations' MapParticipantModal lets you set `outreach_logs.referred_by`. If contact is created directly in reThink (OutreachPanel), no picker → Pipeline expansion KPI misses that contribution. | 30 min | Medium. Matters when the author adds people manually after networking offline. |
+
+## Phases shipped this round ✅ (2026-04-20)
+
+| # | What | Commits | Release |
+|---|---|---|---|
+| 6 | KPI system — two weekly goal sources (`networkhub_tier_touches`, `networkhub_expansion`) + positional Airport Test tier classification. DB migration: `contact_channels.backfilled_at` + `backfill_reached_start`, `outreach_logs_tier_check`, widened `integration_source` check. | reThink `a59667e`, `d77b80d`, `27f6931`, `3680156`, `53c8c3f` | reThink v0.1.119 |
+| v0.0.8 release | Infra: `.github/workflows/release.yml` + 3 GH secrets (VITE_GEMINI_API_KEY, SUPABASE_URL, SUPABASE_ANON_KEY). electron-builder → GH Release auto-promote. | `9fe4ef9`, `93714b7` | v0.0.8 |
+| Backfill marker | Scroll-and-scan script tracks `reachedStart`. `importBackfillWindows` writes `contact_channels.backfilled_at` + `backfill_reached_start` so reThink's KPI can gate "new" classification against unscanned chats. | `bbb7a77` | v0.0.8 |
+| Introduced-by picker | `MapParticipantModal` Create tab has a searchable picker for the contact who introduced you. Writes `outreach_logs.referred_by` → feeds Pipeline expansion KPI. CSS for `.referrer-chip*` in tokens.css. | `bbb7a77`, (css follow-up) | v0.0.8 / v0.0.9 |
+| Phase 8 | Removed WhatsApp content-script + sidebar screens + service-worker handlers from the Chrome extension. ~500 LOC gone. Prevents duplicate `interactions` rows now that Conversations owns WA capture. | reThink `53c8c3f` | — |
+| Phase 5.1 | LinkedIn photos uploaded to Supabase Storage on enrich + create. `electron/supabase/photo-upload.ts`, graceful fallback to raw CDN URL. | `aaed043` | v0.0.9 |
+| Phase 5.2 | Positional location + company scrapers in `preload-linkedin.ts`. Anchors on the "N followers/connections" block at the end of top-card `<p>`s and walks backwards. Plumbed new `company` field through LinkedinProfile → LiState → CreateFromLiInput / EnrichFromLiInput / IPC handlers / renderer callers. | `aaed043` | v0.0.9 |
 
 ---
 
@@ -152,11 +137,17 @@ npx asar pack /tmp/conv-asar-unpacked /Applications/Conversations.app/Contents/R
 open /Applications/Conversations.app
 ```
 
-### Shipping a new version (when memory allows)
+### Shipping a new version (now on CI — no local memory needed)
 ```bash
-npm version patch
-npm run release              # build DMG + create GH release
-git push origin master --tags
+# Bump version in package.json, commit, push, tag, push tag:
+npm version patch --no-git-tag-version && git add package.json \
+  && git commit -m "chore: bump to v$(node -p "require('./package.json').version")" \
+  && git push origin master \
+  && git tag "v$(node -p "require('./package.json').version")" \
+  && git push origin --tags
+
+# GH Actions builds in ~1.5 min and auto-publishes the release.
+# electron-updater in the installed app picks up the update on next check.
 ```
 
 ### Where things live

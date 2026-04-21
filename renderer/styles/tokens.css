@@ -1011,6 +1011,42 @@ body {
   white-space: nowrap;
 }
 
+/* ────────── Introduced-by (daisy chain) picker chip ────────── */
+.referrer-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px 4px 4px;
+  margin-top: 4px;
+  background: var(--bg-soft);
+  border: 1px solid var(--mercury);
+  border-radius: 999px;
+  max-width: 100%;
+}
+.referrer-chip-name {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--midnight);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.referrer-chip-remove {
+  margin-left: auto;
+  border: none;
+  background: transparent;
+  padding: 0 2px;
+  color: var(--shuttle);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  opacity: 0.5;
+  transition: opacity 0.12s;
+}
+.referrer-chip-remove:hover {
+  opacity: 1;
+}
+
 /* ────────── LinkedIn empty state ────────── */
 .li-empty {
   padding: 14px;
