@@ -241,11 +241,35 @@ function extractWaNameFromMessageEl(msg: Element): string | null {
   return match ? match[1].trim() : null
 }
 
+// Scope helper: returns [data-id] elements in the right-hand conversation
+// pane only, skipping chat-list previews (which also carry data-ids). Mirrors
+// the fix in probeGroupIdFromMessages — without this scope, participant
+// extraction picks up sender ids from OTHER chats previewed in the sidebar.
+function centerPaneMessageEls(): HTMLElement[] {
+  const chatListEl =
+    document.querySelector('[role="grid"][aria-label="Chat list"]') ??
+    document.querySelector('[role="grid"]')
+  const all = Array.from(document.querySelectorAll<HTMLElement>('[data-id]'))
+  const out: HTMLElement[] = []
+  for (const el of all) {
+    if (chatListEl && chatListEl.contains(el)) continue
+    const r = el.getBoundingClientRect()
+    if (r.width === 0 || r.height === 0) continue
+    if (r.left < 400) continue
+    out.push(el)
+  }
+  return out
+}
+
 function captureAvatarFor(identifier: string): string | null {
   if (avatarCache.has(identifier)) return avatarCache.get(identifier)!
   // Look for messages whose data-id ends with this participant's @c.us or @lid suffix.
-  const selector = `[data-id$="_${identifier}@c.us"], [data-id$="_${identifier}@lid"]`
-  const messages = Array.from(document.querySelectorAll(selector))
+  // Scope to center-pane messages so avatars from other chats in the left
+  // panel don't leak into participants of the active group.
+  const messages = centerPaneMessageEls().filter((el) => {
+    const id = el.getAttribute('data-id') ?? ''
+    return id.endsWith(`_${identifier}@c.us`) || id.endsWith(`_${identifier}@lid`)
+  })
   for (const msg of messages) {
     // The avatar is usually an <img> inside or beside the message row.
     // Walk outward a couple of levels and look for a blob:-src image.
@@ -275,9 +299,11 @@ function captureAvatarFor(identifier: string): string | null {
 }
 
 function getGroupParticipants(): Participant[] {
-  const messages = document.querySelectorAll('[data-id]')
+  // Scope to center-pane messages only — chat-list previews carry data-ids
+  // that can look message-like and pollute the participant list.
+  const messages = centerPaneMessageEls()
   const seen = new Map<string, Participant>()
-  for (const msg of Array.from(messages)) {
+  for (const msg of messages) {
     const dataId = msg.getAttribute('data-id') ?? ''
     // Only take messages FROM others (false_...), not ones we sent
     // (true_...); our own outgoing messages in groups shouldn't make us
@@ -514,13 +540,17 @@ function tick(): void {
     const participants = getGroupParticipants()
 
     // One-shot diagnostic: if we landed in a group but couldn't pull any
-    // participants, dump a few raw data-ids so we can see what WA changed.
+    // participants, dump a few raw data-ids (center-pane only) so we can
+    // see what WA changed.
     if (participants.length === 0 && diagnosticLoggedForGroup !== identity.groupId) {
       diagnosticLoggedForGroup = identity.groupId
-      const samples = Array.from(document.querySelectorAll('[data-id]'))
-        .slice(0, 8)
-        .map((el) => el.getAttribute('data-id'))
-      console.warn('[wa-preload] group but 0 participants. samples:', samples)
+      const centerSamples = centerPaneMessageEls().slice(0, 8).map((el) => el.getAttribute('data-id'))
+      const allSamples = Array.from(document.querySelectorAll('[data-id]'))
+        .slice(0, 8).map((el) => el.getAttribute('data-id'))
+      console.warn('[wa-preload] group but 0 participants.',
+        'centerPane samples:', centerSamples,
+        'allDoc samples:', allSamples,
+      )
     }
 
     const keys = participants
