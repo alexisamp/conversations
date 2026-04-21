@@ -24,6 +24,86 @@ function slugFromLinkedinUrl(linkedinUrl: string): string {
   return linkedinUrl.match(/\/in\/([^/?#]+)/)?.[1] ?? 'photo'
 }
 
+async function uploadToContactPhotos(
+  sourceUrl: string,
+  storageKey: string,
+): Promise<string | null> {
+  const supabase = getSupabase()
+  const {
+    data: { session },
+  } = await supabase.auth.getSession()
+  if (!session) {
+    console.warn('[photo-upload] no session — cannot upload')
+    return null
+  }
+  const token = session.access_token
+
+  const res = await fetch(sourceUrl)
+  if (!res.ok) {
+    console.warn('[photo-upload] fetch failed:', res.status, res.statusText, sourceUrl.slice(0, 80))
+    return null
+  }
+  const contentType = res.headers.get('content-type')
+  const blob = await res.blob()
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const supabaseUrl = (supabase as any).supabaseUrl as string
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const supabaseAnon = (supabase as any).supabaseKey as string
+
+  const uploadRes = await fetch(
+    `${supabaseUrl}/storage/v1/object/contact-photos/${storageKey}`,
+    {
+      method: 'POST',
+      headers: {
+        apikey: supabaseAnon,
+        Authorization: `Bearer ${token}`,
+        'Content-Type': contentType ?? blob.type ?? 'image/jpeg',
+        'x-upsert': 'true',
+      },
+      body: blob,
+    },
+  )
+  if (!uploadRes.ok) {
+    const txt = await uploadRes.text().catch(() => '')
+    console.warn('[photo-upload] upload failed:', uploadRes.status, txt.slice(0, 200))
+    return null
+  }
+  return `${supabaseUrl}/storage/v1/object/public/contact-photos/${storageKey}`
+}
+
+/**
+ * Download the LinkedIn company logo at `logoUrl` and upload it to Supabase
+ * Storage under `companies/{userId}/{normalized-name}.{ext}`. Returns the
+ * permanent public URL or null on failure.
+ */
+export async function uploadCompanyLogo(
+  logoUrl: string,
+  companyName: string,
+): Promise<string | null> {
+  try {
+    const supabase = getSupabase()
+    const { data: { session } } = await supabase.auth.getSession()
+    if (!session) return null
+
+    // Derive extension from the URL's content
+    const head = await fetch(logoUrl, { method: 'HEAD' }).catch(() => null)
+    const ct = head?.headers.get('content-type') ?? ''
+    const ext = ct.includes('png') ? 'png' : ct.includes('webp') ? 'webp' : 'jpg'
+
+    const slug = companyName.toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 60) || 'company'
+    const storageKey = `companies/${session.user.id}/${slug}.${ext}`
+
+    return await uploadToContactPhotos(logoUrl, storageKey)
+  } catch (err) {
+    console.warn('[photo-upload] company logo upload error:', err)
+    return null
+  }
+}
+
 /**
  * Download the LinkedIn photo at `photoUrl` and upload it to Supabase Storage.
  * Returns the permanent public URL on success, or null on any failure

@@ -14,6 +14,8 @@ type LinkedinProfile = {
   name: string | null
   jobTitle: string | null
   company: string | null
+  companyLinkedinUrl: string | null
+  companyLogoUrl: string | null
   location: string | null
   about: string | null
   photoUrl: string | null
@@ -279,6 +281,58 @@ function scrapeCompany(): string | null {
   return t
 }
 
+// Extract the LinkedIn company URL (and logo) for the current role. The
+// top-card area usually has a short anchor linking to /company/<slug>/ next
+// to the company name text — this is what we want. Experience section also
+// has /company/ links but the first one on the page tends to be the current
+// role, which matches the scrapeCompany() block at position fIdx-2.
+function scrapeCompanyLinkedin(): { url: string | null; logoUrl: string | null } {
+  // Normalize to a canonical "https://www.linkedin.com/company/<slug>/" URL,
+  // stripping search params and nested paths.
+  function normalize(raw: string): string | null {
+    const m = raw.match(/linkedin\.com\/company\/([^/?#]+)/)
+    if (!m) return null
+    return `https://www.linkedin.com/company/${m[1]}/`
+  }
+
+  const mainEl = document.querySelector('main') ?? document.body
+  const anchors = Array.from(
+    mainEl.querySelectorAll<HTMLAnchorElement>('a[href*="/company/"]'),
+  )
+  // Prefer anchors that are NOT in the nav/footer by checking they're under
+  // a <section> or in the top-card container.
+  const scoped = anchors.filter((a) => {
+    return a.closest('section, [data-view-name]')
+  })
+  const pool = scoped.length > 0 ? scoped : anchors
+  if (pool.length === 0) return { url: null, logoUrl: null }
+
+  const first = pool[0]
+  const url = normalize(first.href)
+  if (!url) return { url: null, logoUrl: null }
+
+  // Logo: nearby <img> in the same experience row / top-card block. LI uses
+  // media.licdn.com/dms/image/...company-logo_... for company avatars.
+  const row = first.closest('li, section, div[class*="experience"], div')
+  let logoUrl: string | null = null
+  if (row) {
+    const imgs = Array.from(row.querySelectorAll<HTMLImageElement>('img'))
+    for (const img of imgs) {
+      const s = img.src || img.getAttribute('data-delayed-url') || ''
+      if (s.includes('company-logo') || s.includes('company_logo')) {
+        logoUrl = s
+        break
+      }
+      // Fallback: any media.licdn.com image near the company anchor is likely
+      // the logo (profile photos sit in a different block).
+      if (!logoUrl && s.includes('media.licdn.com')) {
+        logoUrl = s
+      }
+    }
+  }
+  return { url, logoUrl }
+}
+
 function scrapeAbout(): string | null {
   // Find the "About" section by walking from its heading.
   const headings = Array.from(
@@ -463,6 +517,7 @@ function tick(): void {
     diagnosePhotoDom(parsed.slug, name)
     const jobTitle = scrapeJobTitle()
     const company = scrapeCompany()
+    const { url: companyLinkedinUrl, logoUrl: companyLogoUrl } = scrapeCompanyLinkedin()
     const location = scrapeLocation()
     const about = scrapeAbout()
     const photoUrl = scrapePhotoUrl()
@@ -473,6 +528,8 @@ function tick(): void {
       name,
       jobTitle,
       company,
+      companyLinkedinUrl,
+      companyLogoUrl,
       location,
       about,
       photoUrl,

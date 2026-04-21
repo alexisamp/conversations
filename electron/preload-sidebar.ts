@@ -140,6 +140,8 @@ export type LiState =
       name: string | null
       jobTitle: string | null
       company: string | null
+      companyLinkedinUrl: string | null
+      companyLogoUrl: string | null
       location: string | null
       about: string | null
       photoUrl: string | null
@@ -151,6 +153,8 @@ export type EnrichFromLiInput = {
   name: string | null
   jobTitle: string | null
   company: string | null
+  companyLinkedinUrl: string | null
+  companyLogoUrl: string | null
   location: string | null
   about: string | null
   photoUrl: string | null
@@ -162,6 +166,8 @@ export type CreateFromLiInput = {
   name: string
   jobTitle: string | null
   company: string | null
+  companyLinkedinUrl: string | null
+  companyLogoUrl: string | null
   location: string | null
   about: string | null
   photoUrl: string | null

@@ -951,6 +951,8 @@ type LinkedinScrapeInput = {
   name: string | null
   jobTitle: string | null
   company: string | null
+  companyLinkedinUrl: string | null
+  companyLogoUrl: string | null
   location: string | null
   about: string | null
   photoUrl: string | null
@@ -981,6 +983,8 @@ async function createContactFromLinkedinProfile(input: {
   name: string
   jobTitle: string | null
   company: string | null
+  companyLinkedinUrl: string | null
+  companyLogoUrl: string | null
   location: string | null
   about: string | null
   photoUrl: string | null
@@ -1034,6 +1038,22 @@ async function createContactFromLinkedinProfile(input: {
     channel_name: input.name,
     verified: true,
   })
+
+  // Company auto-enrichment: same path as enrichContactFromLinkedinProfile.
+  if (company) {
+    let permanentLogoUrl: string | null = null
+    if (input.companyLogoUrl) {
+      const { uploadCompanyLogo } = await import('./photo-upload')
+      permanentLogoUrl = await uploadCompanyLogo(input.companyLogoUrl, company)
+    }
+    const { error: rpcErr } = await supabase.rpc('upsert_company_and_link', {
+      company_name: company,
+      company_linkedin_url: input.companyLinkedinUrl ?? null,
+      company_logo_url: permanentLogoUrl ?? input.companyLogoUrl ?? null,
+      company_domain_in: null,
+    })
+    if (rpcErr) console.warn('[contacts] create: upsert_company_and_link failed:', rpcErr.message)
+  }
 
   console.log(
     '[contacts] created from LI profile →',
@@ -1164,10 +1184,30 @@ async function enrichContactFromLinkedinProfile(
     }
   }
 
+  // Company auto-enrichment: upsert a companies row by normalized name
+  // (creates once, reuses thereafter), upload the logo, and link every
+  // contact whose `company` text matches → they all get the same company_id.
+  const finalCompany = company ?? null
+  if (finalCompany) {
+    let permanentLogoUrl: string | null = null
+    if (input.companyLogoUrl) {
+      const { uploadCompanyLogo } = await import('./photo-upload')
+      permanentLogoUrl = await uploadCompanyLogo(input.companyLogoUrl, finalCompany)
+    }
+    const { error: rpcErr } = await supabase.rpc('upsert_company_and_link', {
+      company_name: finalCompany,
+      company_linkedin_url: input.companyLinkedinUrl ?? null,
+      company_logo_url: permanentLogoUrl ?? input.companyLogoUrl ?? null,
+      company_domain_in: null,
+    })
+    if (rpcErr) console.warn('[contacts] upsert_company_and_link failed:', rpcErr.message)
+  }
+
   console.log(
     '[contacts] enriched contact from LI profile →',
     input.contact_id,
     Object.keys(updates),
+    finalCompany ? `[company: ${finalCompany}]` : '',
   )
   return { ok: true }
 }
@@ -1275,6 +1315,8 @@ export function registerContactIpc(): void {
         name: string
         jobTitle: string | null
         company: string | null
+        companyLinkedinUrl: string | null
+        companyLogoUrl: string | null
         location: string | null
         about: string | null
         photoUrl: string | null
@@ -1290,6 +1332,8 @@ export function registerContactIpc(): void {
         name: string | null
         jobTitle: string | null
         company: string | null
+        companyLinkedinUrl: string | null
+        companyLogoUrl: string | null
         location: string | null
         about: string | null
         photoUrl: string | null
