@@ -1011,6 +1011,21 @@ body {
   white-space: nowrap;
 }
 
+/* ────────── LinkedIn name-match list (attach-to-existing prompt) ────────── */
+.li-name-matches {
+  margin: 12px 14px 6px;
+  padding: 10px;
+  background: var(--bg-soft);
+  border: 1px solid var(--mercury);
+  border-radius: 8px;
+}
+.li-name-matches-header {
+  font-size: 11px;
+  color: var(--shuttle);
+  margin-bottom: 8px;
+  line-height: 1.35;
+}
+
 /* ────────── Introduced-by (daisy chain) picker chip ────────── */
 .referrer-chip {
   display: inline-flex;

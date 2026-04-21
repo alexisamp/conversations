@@ -154,6 +154,7 @@ export type EnrichFromLiInput = {
   location: string | null
   about: string | null
   photoUrl: string | null
+  linkedinUrl?: string | null
 }
 
 export type CreateFromLiInput = {

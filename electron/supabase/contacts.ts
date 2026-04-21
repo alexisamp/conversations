@@ -954,6 +954,12 @@ type LinkedinScrapeInput = {
   location: string | null
   about: string | null
   photoUrl: string | null
+  // Optional — when provided, enrich will also set outreach_logs.linkedin_url
+  // (if null) and ensure a contact_channels row exists for LinkedIn. Used by
+  // the "Attach to existing contact" flow in LinkedinProfileScreen so a user
+  // can link a LI profile to a pre-existing WA-originated row without
+  // creating a duplicate.
+  linkedinUrl?: string | null
 }
 
 /** Extract company from a headline like "Title at Company" or "Title / Company". */
@@ -1078,20 +1084,28 @@ async function enrichContactFromLinkedinProfile(
   // fallback which only catches "X at Y" headlines.
   const company = input.company ?? parseCompanyFromHeadline(input.jobTitle)
 
+  const existingLinkedinUrl = (current as { linkedin_url: string | null }).linkedin_url
+  // Prefer the row's own linkedin_url. Fall back to the scrape's URL (passed
+  // during attach-to-existing flow where the target row doesn't have one yet).
+  const effectiveLinkedinUrl = existingLinkedinUrl ?? input.linkedinUrl ?? null
+
   const updates: Record<string, unknown> = {}
   // LinkedIn-sourced fields: always overwrite when scrape has a value
   if (input.jobTitle) updates.job_title = input.jobTitle
   if (company) updates.company = company
   if (input.location) updates.location = input.location
   if (input.about) updates.personal_context = input.about
+  // Attach-to-existing: write linkedin_url when the row doesn't have one yet
+  if (!existingLinkedinUrl && input.linkedinUrl) {
+    updates.linkedin_url = input.linkedinUrl
+  }
   if (input.photoUrl) {
     // media.licdn.com URLs expire; mirror to Supabase Storage for permanence.
     // Falls back to the raw URL if upload fails (degrades gracefully — photo
     // still renders until the CDN URL expires).
-    const linkedinUrl = (current as { linkedin_url: string | null }).linkedin_url ?? ''
-    if (linkedinUrl) {
+    if (effectiveLinkedinUrl) {
       const { uploadLinkedInPhoto } = await import('./photo-upload')
-      const permanent = await uploadLinkedInPhoto(input.photoUrl, linkedinUrl)
+      const permanent = await uploadLinkedInPhoto(input.photoUrl, effectiveLinkedinUrl)
       updates.profile_photo_url = permanent ?? input.photoUrl
     } else {
       updates.profile_photo_url = input.photoUrl
@@ -1119,6 +1133,29 @@ async function enrichContactFromLinkedinProfile(
     console.error('[contacts] enrich update failed:', updErr)
     return { ok: false, error: updErr.message }
   }
+
+  // Attach-to-existing: ensure a contact_channels row exists for LinkedIn,
+  // so the row shows an LI icon + lookups by linkedin_url still resolve.
+  if (input.linkedinUrl && !existingLinkedinUrl) {
+    const { data: existingChannel } = await supabase
+      .from('contact_channels')
+      .select('id')
+      .eq('outreach_log_id', input.contact_id)
+      .eq('channel', 'linkedin')
+      .eq('channel_identifier', input.linkedinUrl)
+      .maybeSingle()
+    if (!existingChannel) {
+      const { error: chErr } = await supabase.from('contact_channels').insert({
+        outreach_log_id: input.contact_id,
+        channel: 'linkedin',
+        channel_identifier: input.linkedinUrl,
+        channel_name: input.name ?? null,
+        verified: true,
+      })
+      if (chErr) console.warn('[contacts] attach LI channel insert failed:', chErr)
+    }
+  }
+
   console.log(
     '[contacts] enriched contact from LI profile →',
     input.contact_id,
@@ -1248,6 +1285,7 @@ export function registerContactIpc(): void {
         location: string | null
         about: string | null
         photoUrl: string | null
+        linkedinUrl?: string | null
       },
     ) => enrichContactFromLinkedinProfile(input),
   )

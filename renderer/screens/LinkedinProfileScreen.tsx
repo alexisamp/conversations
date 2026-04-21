@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import type { ContactDetail, LiState } from '../conv-api'
+import type { ContactBrief, ContactDetail, LiState } from '../conv-api'
 import { ContactDetailScreen } from './ContactDetailScreen'
 import { initialsOf } from '../lib/contact-helpers'
 
@@ -18,6 +18,11 @@ export function LinkedinProfileScreen({ state }: Props) {
   const [creating, setCreating] = useState(false)
   const [enriching, setEnriching] = useState(false)
   const [createError, setCreateError] = useState<string | null>(null)
+  // Name-based search when URL-based lookup misses — surfaces existing WA/other
+  // contacts that might be the same person under a different channel, before
+  // the user hits Create and creates a duplicate.
+  const [nameMatches, setNameMatches] = useState<ContactBrief[]>([])
+  const [attachingId, setAttachingId] = useState<string | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -44,6 +49,41 @@ export function LinkedinProfileScreen({ state }: Props) {
     const contact = await window.conv.contact.byLinkedinUrl(state.url)
     if (contact) setLookup({ kind: 'found', contact })
     else setLookup({ kind: 'not-found' })
+  }
+
+  // Fire a name-based search when the URL lookup misses — only kicks in once
+  // the LI scrape actually has the person's name. Runs whenever we flip to
+  // not-found so stale results clear if the user navigates between profiles.
+  useEffect(() => {
+    if (lookup.kind !== 'not-found' || !state.name || state.name.length < 2) {
+      setNameMatches([])
+      return
+    }
+    let cancelled = false
+    window.conv.contact.searchByName(state.name).then((rows) => {
+      if (!cancelled) setNameMatches(rows)
+    })
+    return () => { cancelled = true }
+  }, [lookup.kind, state.name])
+
+  async function handleAttach(target: ContactBrief) {
+    setAttachingId(target.id)
+    const result = await window.conv.contact.enrichFromLinkedinProfile({
+      contact_id: target.id,
+      name: state.name,
+      jobTitle: state.jobTitle,
+      company: state.company,
+      location: state.location,
+      about: state.about,
+      photoUrl: state.photoUrl,
+      linkedinUrl: state.url,
+    })
+    setAttachingId(null)
+    if (result.ok) {
+      await refetch()
+    } else {
+      setCreateError(result.error)
+    }
   }
 
   async function handleCreate() {
@@ -163,10 +203,43 @@ export function LinkedinProfileScreen({ state }: Props) {
       <div className="empty">
         <strong>Not in reThink</strong>
         <div className="muted small">
-          Data scraped live from the LinkedIn profile in your authenticated
-          session.
+          No contact has this LinkedIn URL attached yet.
         </div>
       </div>
+
+      {nameMatches.length > 0 && (
+        <div className="li-name-matches">
+          <div className="li-name-matches-header">
+            Possible existing contacts by name — attach the LinkedIn profile instead of creating a duplicate.
+          </div>
+          <ul className="search-results">
+            {nameMatches.map((c) => (
+              <li key={c.id}>
+                <div className="avatar small">
+                  {c.profile_photo_url ? (
+                    <img src={c.profile_photo_url} alt={c.name} />
+                  ) : (
+                    <div className="avatar-initials">{initialsOf(c.name)}</div>
+                  )}
+                </div>
+                <div className="search-result-info">
+                  <div className="search-result-name">{c.name}</div>
+                  <div className="search-result-subtitle">
+                    {[c.job_title, c.company].filter(Boolean).join(' · ') || '—'}
+                  </div>
+                </div>
+                <button
+                  className="primary tiny"
+                  disabled={attachingId !== null}
+                  onClick={() => handleAttach(c)}
+                >
+                  {attachingId === c.id ? '…' : 'Attach'}
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       <div className="li-empty-actions">
         <button
@@ -174,7 +247,7 @@ export function LinkedinProfileScreen({ state }: Props) {
           disabled={creating || !state.name}
           onClick={handleCreate}
         >
-          {creating ? 'Creating…' : '+ Create in reThink'}
+          {creating ? 'Creating…' : nameMatches.length > 0 ? '+ Create new anyway' : '+ Create in reThink'}
         </button>
         {!state.name && (
           <div className="muted small">
