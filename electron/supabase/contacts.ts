@@ -1274,8 +1274,16 @@ async function deepEnrichCompanyFromLinkedIn(
     if (scrape.websiteUrl) updates.website_url = scrape.websiteUrl
     if (scrape.industry) updates.sector = scrape.industry
     if (scrape.companySize) updates.size = scrape.companySize
-    if (scrape.employeeCountEstimate) updates.employees_count = scrape.employeeCountEstimate
-    if (scrape.employeesOnLinkedIn) updates.members_on_linkedin = scrape.employeesOnLinkedIn
+    // employees_count = canonical "how many people work here". Prefer the
+    // real "associated members" count over the bucket ceiling (which LI
+    // often has stale by years). Only fall back to the bucket if
+    // associated-members scrape missed.
+    if (scrape.employeesOnLinkedIn) {
+      updates.employees_count = scrape.employeesOnLinkedIn
+      updates.members_on_linkedin = scrape.employeesOnLinkedIn
+    } else if (scrape.employeeCountEstimate) {
+      updates.employees_count = scrape.employeeCountEstimate
+    }
     if (scrape.foundedYear) updates.founded_year = scrape.foundedYear
     if (scrape.hqLocation) updates.hq_location = scrape.hqLocation
     if (scrape.followers) updates.followers_count = scrape.followers

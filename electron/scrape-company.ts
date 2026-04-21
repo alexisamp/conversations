@@ -262,10 +262,23 @@ const COMPANY_SCRAPE_SCRIPT = `
   }
 
   // ── Followers ────────────────────────────────────────────────
+  // Scope to the company page's HEADER area only — not the full body.
+  // The About page's right column often has "Similar companies" and
+  // "People also viewed" panels showing OTHER companies' follower counts,
+  // which would win the body-wide regex race and pollute our field.
   let followers = null
-  const fm = bodyText.match(/([\\d.,]+)\\s+(followers|seguidores)/i)
-  if (fm) {
-    followers = parseInt(fm[1].replace(/[^\\d]/g, ''), 10) || null
+  const headerScope = document.querySelector('main section:first-of-type')
+                   || document.querySelector('main header')
+                   || document.querySelector('header')
+  if (headerScope) {
+    const headerText = (headerScope.innerText || '').replace(/\\s+/g, ' ')
+    const fm = headerText.match(/([\\d.,]+)\\s+(followers|seguidores)/i)
+    if (fm) followers = parseInt(fm[1].replace(/[^\\d]/g, ''), 10) || null
+  }
+  // Fallback: full body if header scoping missed it
+  if (followers === null) {
+    const fm = bodyText.match(/([\\d.,]+)\\s+(followers|seguidores)/i)
+    if (fm) followers = parseInt(fm[1].replace(/[^\\d]/g, ''), 10) || null
   }
 
   return {
