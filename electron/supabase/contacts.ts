@@ -986,6 +986,14 @@ async function createContactFromLinkedinProfile(input: {
 
   const company = parseCompanyFromHeadline(input.jobTitle)
 
+  // Mirror LI photo to Supabase Storage (media.licdn.com URLs expire).
+  let photoUrlToStore: string | null = input.photoUrl
+  if (input.photoUrl) {
+    const { uploadLinkedInPhoto } = await import('./photo-upload')
+    const permanent = await uploadLinkedInPhoto(input.photoUrl, input.url)
+    photoUrlToStore = permanent ?? input.photoUrl
+  }
+
   const { data: inserted, error: insertErr } = await supabase
     .from('outreach_logs')
     .insert({
@@ -996,7 +1004,7 @@ async function createContactFromLinkedinProfile(input: {
       company,
       location: input.location,
       personal_context: input.about,
-      profile_photo_url: input.photoUrl,
+      profile_photo_url: photoUrlToStore,
       status: 'PROSPECT',
     })
     .select('id')
@@ -1055,7 +1063,7 @@ async function enrichContactFromLinkedinProfile(
   const supabase = getSupabase()
   const { data: current, error: fetchErr } = await supabase
     .from('outreach_logs')
-    .select('name')
+    .select('name, linkedin_url')
     .eq('id', input.contact_id)
     .maybeSingle()
   if (fetchErr || !current) {
@@ -1070,7 +1078,19 @@ async function enrichContactFromLinkedinProfile(
   if (company) updates.company = company
   if (input.location) updates.location = input.location
   if (input.about) updates.personal_context = input.about
-  if (input.photoUrl) updates.profile_photo_url = input.photoUrl
+  if (input.photoUrl) {
+    // media.licdn.com URLs expire; mirror to Supabase Storage for permanence.
+    // Falls back to the raw URL if upload fails (degrades gracefully — photo
+    // still renders until the CDN URL expires).
+    const linkedinUrl = (current as { linkedin_url: string | null }).linkedin_url ?? ''
+    if (linkedinUrl) {
+      const { uploadLinkedInPhoto } = await import('./photo-upload')
+      const permanent = await uploadLinkedInPhoto(input.photoUrl, linkedinUrl)
+      updates.profile_photo_url = permanent ?? input.photoUrl
+    } else {
+      updates.profile_photo_url = input.photoUrl
+    }
+  }
 
   // Name: only fill if the stored name is empty or looks like a URL slug
   const storedName = (current as { name: string | null }).name ?? ''
