@@ -51,6 +51,13 @@ let mainWindow: BaseWindow | null = null
 let tabBarView: WebContentsView | null = null
 let whatsappView: WebContentsView | null = null
 let linkedinView: WebContentsView | null = null
+
+/** Accessor for other modules that need the authenticated LI WebContents
+ *  (e.g. scrape-company.ts navigates it to /company/<slug>/about/ to pull
+ *  enrichment data). Returns null before the main window is initialized. */
+export function getLinkedinWebContents(): Electron.WebContents | null {
+  return linkedinView?.webContents ?? null
+}
 let sidebarView: WebContentsView | null = null
 let searchOverlayView: WebContentsView | null = null
 let sidebarVisible = true

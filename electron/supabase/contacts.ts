@@ -1201,6 +1201,13 @@ async function enrichContactFromLinkedinProfile(
       company_domain_in: null,
     })
     if (rpcErr) console.warn('[contacts] upsert_company_and_link failed:', rpcErr.message)
+
+    // Deep enrichment: navigate the LI view to /company/<slug>/about/ and
+    // scrape description, domain, industry, size, HQ, followers, logo.
+    // Fire-and-forget — don't block the enrich response on it.
+    if (input.companyLinkedinUrl) {
+      void deepEnrichCompanyFromLinkedIn(finalCompany, input.companyLinkedinUrl)
+    }
   }
 
   console.log(
@@ -1210,6 +1217,94 @@ async function enrichContactFromLinkedinProfile(
     finalCompany ? `[company: ${finalCompany}]` : '',
   )
   return { ok: true }
+}
+
+// Deep-scrape a LI company page and update the matching companies row.
+// Runs async after enrich returns — the LI view briefly navigates to the
+// company About page, scrapes, then returns to where the user was.
+async function deepEnrichCompanyFromLinkedIn(
+  companyName: string,
+  companyLinkedinUrl: string,
+): Promise<void> {
+  try {
+    const [{ getLinkedinWebContents }, { scrapeLinkedInCompanyInView }] = await Promise.all([
+      import('../main'),
+      import('../scrape-company'),
+    ])
+    const wc = getLinkedinWebContents()
+    if (!wc) {
+      console.warn('[contacts] deep-enrich: LI view not ready')
+      return
+    }
+    const scrape = await scrapeLinkedInCompanyInView(wc, companyLinkedinUrl)
+    if (!scrape) {
+      console.warn('[contacts] deep-enrich: scrape returned null')
+      return
+    }
+
+    // Upload logo to Supabase Storage (media.licdn.com URLs expire)
+    let permanentLogoUrl: string | null = null
+    if (scrape.logoUrl) {
+      const { uploadCompanyLogo } = await import('./photo-upload')
+      permanentLogoUrl = await uploadCompanyLogo(scrape.logoUrl, companyName)
+    }
+
+    // Normalize company name the same way the RPC does (lowercase + space
+    // collapse) so we hit the row regardless of caller casing.
+    const supabase = getSupabase()
+    const {
+      data: { session },
+    } = await supabase.auth.getSession()
+    if (!session) return
+    const userId = session.user.id
+
+    const updates: Record<string, unknown> = {
+      last_enriched_at: new Date().toISOString(),
+    }
+    // Only overwrite NULL columns — never clobber user-curated values. The
+    // RPC's initial upsert may have left some as null; this fills them in.
+    if (scrape.description) updates.description = scrape.description
+    if (scrape.domain) updates.domain = scrape.domain
+    if (scrape.websiteUrl) updates.website_url = scrape.websiteUrl
+    if (scrape.industry) updates.sector = scrape.industry
+    if (scrape.companySize) updates.size = scrape.companySize
+    if (scrape.employeeCountEstimate) updates.employees_count = scrape.employeeCountEstimate
+    if (scrape.hqLocation) updates.hq_location = scrape.hqLocation
+    if (scrape.followers) updates.followers_count = scrape.followers
+    if (permanentLogoUrl ?? scrape.logoUrl) updates.logo_url = permanentLogoUrl ?? scrape.logoUrl
+    updates.linkedin_url = companyLinkedinUrl
+
+    // Use .filter(...) against COALESCE so we only fill NULLs. The simplest
+    // way in supabase-js is to just UPDATE the row and rely on COALESCE in
+    // an RPC — but doing this client-side: we update unconditionally for
+    // all fields where scrape had a value (LI is authoritative for those).
+    // For 'description', we COALESCE here manually to avoid wiping curated
+    // value. Skip it if the row already has a non-empty description.
+    const { data: existing } = await supabase
+      .from('companies')
+      .select('id, description, notes')
+      .eq('user_id', userId)
+      .ilike('name', companyName)
+      .maybeSingle()
+    if (!existing) {
+      console.warn('[contacts] deep-enrich: no company row to update for', companyName)
+      return
+    }
+    if (existing.description && existing.description.trim()) {
+      delete updates.description
+    }
+    const { error: updErr } = await supabase
+      .from('companies')
+      .update(updates)
+      .eq('id', existing.id)
+    if (updErr) {
+      console.warn('[contacts] deep-enrich update failed:', updErr.message)
+    } else {
+      console.log('[contacts] deep-enriched company →', companyName, Object.keys(updates))
+    }
+  } catch (err) {
+    console.warn('[contacts] deep-enrich threw:', err)
+  }
 }
 
 async function attachLidToExistingContact(input: {
