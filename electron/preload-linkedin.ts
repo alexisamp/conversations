@@ -306,15 +306,23 @@ function scrapeCompany(): string | null {
 }
 
 // Extract company info (name + URL + logo) from the LinkedIn profile's
-// top-card current-role anchor. Modern LI renders the company name INSIDE
-// the <a href="/company/<slug>/"> element (as a <span>), not as a separate
-// <p>. getTopCardTextBlocks() only walks <p>, so the company name never
-// surfaces through the block-position logic. Anchor-based detection is the
-// authoritative path for company fields; block-based is a degraded fallback.
+// top-card current-role widget. Three layers of detection, most-reliable
+// first:
 //
-// Filters out education anchors (e.g. "Marketing Week Mini MBA with Mark
-// Ritson") via EDUCATION_KEYWORD_RE so we pick the real employer even when
-// the top card lists both current company and a current course.
+//   L1: aria-label on a <button> or <a> — "Current company: Granola" /
+//       "Empresa actual: Granola". Most robust post-2024 because LI uses
+//       this for accessibility on role-widget buttons even when there's no
+//       anchor tag. Covers the variant where the current-role row is a
+//       <button> (no href).
+//
+//   L2: <a href="/company/<slug>/"> anchor text. Covers profiles where the
+//       current-role renders as a real anchor, not a button.
+//
+//   L3: null — caller should fall back to scrapeCompany() (block walker)
+//       and parseCompanyFromHeadline().
+//
+// All layers reject education rows via EDUCATION_KEYWORD_RE — "Marketing
+// Week Mini MBA..." never wins.
 function scrapeCompanyInfo(): { name: string | null; url: string | null; logoUrl: string | null } {
   function normalizeUrl(raw: string): string | null {
     const m = raw.match(/linkedin\.com\/company\/([^/?#]+)/)
@@ -322,23 +330,37 @@ function scrapeCompanyInfo(): { name: string | null; url: string | null; logoUrl
     return `https://www.linkedin.com/company/${m[1]}/`
   }
 
-  // Clean anchor text — remove hidden screen-reader labels, trailing
-  // "Current company: X" prefixes, and collapse whitespace.
-  function cleanText(a: HTMLAnchorElement): string | null {
-    const raw = (a.innerText ?? a.textContent ?? '').trim().replace(/\s+/g, ' ')
+  // Clean visible element text: remove hidden screen-reader preamble,
+  // strip "Current company: X" prefixes that sometimes leak into innerText,
+  // collapse whitespace.
+  function cleanText(el: Element): string | null {
+    const raw = ((el as HTMLElement).innerText ?? el.textContent ?? '').trim().replace(/\s+/g, ' ')
     if (!raw) return null
-    // Screen reader often injects "Current company: " or similar.
     const stripped = raw
-      .replace(/^(current company:?\s*|current role:?\s*)/i, '')
+      .replace(/^(current company|empresa actual|current role|rol actual):?\s*/i, '')
       .trim()
     if (!stripped || stripped.length > 100) return null
     return stripped
   }
 
-  const mainEl = document.querySelector('main') ?? document.body
+  // Try to extract a logo URL from <img> descendants of el, preferring
+  // company-logo-shaped srcs and avoiding the profile photo.
+  function pickLogo(el: Element): string | null {
+    const imgs = Array.from(el.querySelectorAll<HTMLImageElement>('img'))
+    for (const img of imgs) {
+      const s = img.src || img.getAttribute('data-delayed-url') || ''
+      if (s.includes('company-logo') || s.includes('company_logo')) return s
+    }
+    for (const img of imgs) {
+      const s = img.src || img.getAttribute('data-delayed-url') || ''
+      if (s.includes('media.licdn.com') && !s.includes('profile-displayphoto')) return s
+    }
+    return null
+  }
 
-  // Only anchors inside the TOP-CARD area. Walk up from the profile photo
-  // to find the top card container (same approach as getTopCardTextBlocks).
+  // Scope to the TOP-CARD container. Walk up from the profile photo img
+  // until a parent also contains the h1.
+  const mainEl = document.querySelector('main') ?? document.body
   const imgs = Array.from(mainEl.querySelectorAll<HTMLImageElement>('img'))
   const photoImg = imgs.find((img) => {
     const s = img.src || img.getAttribute('data-delayed-url') || ''
@@ -346,48 +368,62 @@ function scrapeCompanyInfo(): { name: string | null; url: string | null; logoUrl
   })
   let topCard: HTMLElement | null = photoImg?.parentElement ?? null
   for (let i = 0; i < 8 && topCard; i++) {
-    if ((topCard.innerText ?? '').length > 200) break
+    if (topCard.querySelector('h1')) break
     topCard = topCard.parentElement
   }
   const scope = topCard ?? mainEl
 
+  // Helper: find a /company/ anchor nearby, trying increasingly broader
+  // scopes. Some LI variants put the aria-label on a button with no nested
+  // anchor — in that case the actual URL anchor lives in the parent row
+  // (same widget item) or elsewhere in the top card.
+  function findCompanyUrlNear(el: Element): string | null {
+    // 1. Descendant
+    const nested = el.querySelector<HTMLAnchorElement>('a[href*="/company/"]')
+    if (nested) return normalizeUrl(nested.href)
+    // 2. Same widget row
+    const row = el.closest('li, .pv-text-details__right-panel-item, [class*="right-panel-item"], section, div')
+    if (row && row !== el) {
+      const rowA = row.querySelector<HTMLAnchorElement>('a[href*="/company/"]')
+      if (rowA) return normalizeUrl(rowA.href)
+    }
+    // 3. Any /company/ anchor in scope (top card). Best-effort.
+    const anyA = scope.querySelector<HTMLAnchorElement>('a[href*="/company/"]')
+    if (anyA) return normalizeUrl(anyA.href)
+    return null
+  }
+
+  // ── L1: aria-label with "Current company: X" / "Empresa actual: X" ──
+  const COMPANY_LABEL_RE = /^(?:current company|empresa actual|current role)[:\s]+(.+)$/i
+  const labeled = Array.from(
+    scope.querySelectorAll<HTMLElement>('[aria-label]'),
+  )
+  for (const el of labeled) {
+    const label = el.getAttribute('aria-label') ?? ''
+    const m = label.match(COMPANY_LABEL_RE)
+    if (!m) continue
+    const name = m[1].trim()
+    if (!name || EDUCATION_KEYWORD_RE.test(name)) continue
+
+    const url = findCompanyUrlNear(el)
+    const logoUrl = pickLogo(el)
+    return { name, url, logoUrl }
+  }
+
+  // ── L2: /company/ anchor — text inside the <a> ──
   const anchors = Array.from(
     scope.querySelectorAll<HTMLAnchorElement>('a[href*="/company/"]'),
   )
-  if (anchors.length === 0) return { name: null, url: null, logoUrl: null }
-
-  // Prefer anchors whose text is not an education row. Walk through all
-  // anchors and pick the first company-like one.
   for (const a of anchors) {
     const text = cleanText(a)
     if (!text) continue
     if (EDUCATION_KEYWORD_RE.test(text)) continue
-
     const url = normalizeUrl(a.href)
-
-    // Logo: <img> inside the anchor or its close ancestor.
-    let logoUrl: string | null = null
-    const row = a.closest('li, section, div')
-    const rowImgs = row
-      ? Array.from(row.querySelectorAll<HTMLImageElement>('img'))
-      : []
-    for (const img of rowImgs) {
-      const s = img.src || img.getAttribute('data-delayed-url') || ''
-      if (s.includes('company-logo') || s.includes('company_logo')) {
-        logoUrl = s
-        break
-      }
-      // Fallback: any media.licdn.com image near the anchor, EXCEPT the
-      // profile photo (which lives at the top of the same card).
-      if (!logoUrl && s.includes('media.licdn.com') && !s.includes('profile-displayphoto')) {
-        logoUrl = s
-      }
-    }
-
+    const row = a.closest('li, section, div') ?? a
+    const logoUrl = pickLogo(row)
     return { name: text, url, logoUrl }
   }
 
-  // All anchors looked like education — give up on company.
   return { name: null, url: null, logoUrl: null }
 }
 
