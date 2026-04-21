@@ -1267,14 +1267,16 @@ async function deepEnrichCompanyFromLinkedIn(
     const updates: Record<string, unknown> = {
       last_enriched_at: new Date().toISOString(),
     }
-    // Only overwrite NULL columns — never clobber user-curated values. The
-    // RPC's initial upsert may have left some as null; this fills them in.
+    // LI is authoritative for these — always overwrite when scrape yielded a value
+    if (scrape.headline) updates.headline = scrape.headline
     if (scrape.description) updates.description = scrape.description
     if (scrape.domain) updates.domain = scrape.domain
     if (scrape.websiteUrl) updates.website_url = scrape.websiteUrl
     if (scrape.industry) updates.sector = scrape.industry
     if (scrape.companySize) updates.size = scrape.companySize
     if (scrape.employeeCountEstimate) updates.employees_count = scrape.employeeCountEstimate
+    if (scrape.employeesOnLinkedIn) updates.members_on_linkedin = scrape.employeesOnLinkedIn
+    if (scrape.foundedYear) updates.founded_year = scrape.foundedYear
     if (scrape.hqLocation) updates.hq_location = scrape.hqLocation
     if (scrape.followers) updates.followers_count = scrape.followers
     if (permanentLogoUrl ?? scrape.logoUrl) updates.logo_url = permanentLogoUrl ?? scrape.logoUrl

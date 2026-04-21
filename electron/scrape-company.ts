@@ -7,12 +7,15 @@
 import type { WebContents } from 'electron'
 
 export type CompanyScrape = {
-  description: string | null
+  headline: string | null        // the tagline under company name
+  description: string | null     // the full overview paragraph
   domain: string | null
   websiteUrl: string | null
   industry: string | null
-  companySize: string | null   // e.g. "51-200 employees"
-  employeeCountEstimate: number | null
+  companySize: string | null     // e.g. "51-200 employees"
+  employeeCountEstimate: number | null  // parsed from companySize range
+  employeesOnLinkedIn: number | null    // actual members count — more accurate
+  foundedYear: number | null
   hqLocation: string | null
   logoUrl: string | null
   followers: number | null
@@ -111,9 +114,9 @@ const COMPANY_SCRAPE_SCRIPT = `
     }
   }
 
-  // ── About section: definition list (dt/dd pairs) ────────────
+  // ── Definition-list picker (dt/dd-ish pairs) ────────────────
   function pickDl(labels) {
-    const dts = Array.from(document.querySelectorAll('dt, h3'))
+    const dts = Array.from(document.querySelectorAll('dt, h3, dt h4'))
     for (const dt of dts) {
       const label = (dt.innerText || '').trim().toLowerCase()
       for (const l of labels) {
@@ -130,7 +133,7 @@ const COMPANY_SCRAPE_SCRIPT = `
   const websiteUrl = pickDl(['website', 'sitio web'])
   const industry = pickDl(['industry', 'industria', 'sector'])
   const companySize = pickDl(['company size', 'tamaño de la empresa', 'tamaño'])
-  const hqLocation = pickDl(['headquarters', 'sede', 'ubicación'])
+  const foundedRaw = pickDl(['founded', 'fundada', 'año de fundación'])
 
   // Derive domain from website
   let domain = null
@@ -141,7 +144,7 @@ const COMPANY_SCRAPE_SCRIPT = `
     } catch (e) {}
   }
 
-  // Employee count: "51-200 employees" → 200; "10,001+" → 10001
+  // Employee count estimate from the bucket range ("51-200" → 200)
   let employeeCountEstimate = null
   if (companySize) {
     const m = companySize.match(/([\\d,]+)(?:\\s*-\\s*([\\d,]+))?/)
@@ -153,27 +156,128 @@ const COMPANY_SCRAPE_SCRIPT = `
     }
   }
 
-  // ── Description (overview paragraph) ─────────────────────────
+  // ── Employees on LinkedIn (more accurate than the bucket) ───
+  // LI About page shows "N employees on LinkedIn" right below the size range.
+  let employeesOnLinkedIn = null
+  const bodyText = document.body.innerText || ''
+  const em = bodyText.match(/([\\d.,]+)\\s+(employees on linkedin|empleados en linkedin)/i)
+  if (em) {
+    employeesOnLinkedIn = parseInt(em[1].replace(/[^\\d]/g, ''), 10) || null
+  }
+
+  // ── Founded year ─────────────────────────────────────────────
+  let foundedYear = null
+  if (foundedRaw) {
+    const ym = foundedRaw.match(/\\b(19|20)\\d{2}\\b/)
+    if (ym) foundedYear = parseInt(ym[0], 10) || null
+  }
+
+  // ── Headline/tagline ─────────────────────────────────────────
+  // The tagline sits below the company name in the page header. LI uses
+  // various classes, but the text is always a short sentence before the
+  // follow button. Pick the first short <p>/<span> inside the top <header>
+  // region that isn't the company name, follower count, or a CTA.
+  let headline = null
+  const header = document.querySelector('main section:first-of-type')
+                 || document.querySelector('header')
+                 || document.querySelector('main')
+  if (header) {
+    const nodes = Array.from(header.querySelectorAll('h2, h3, p, span[dir]'))
+    for (const n of nodes) {
+      const t = textOf(n)
+      if (!t) continue
+      if (t.length < 15 || t.length > 280) continue
+      // Skip CTAs and counters
+      if (/^(follow|message|share|learn more|visit website|about us)$/i.test(t)) continue
+      if (/followers|seguidores|employees|empleados|\\d+\\s+(members|miembros)/i.test(t)) continue
+      // Skip if this is the "name" heading (usually an h1 sibling of the tagline)
+      if (n.tagName === 'H1') continue
+      // Skip location-like (has city pattern)
+      if (/^[A-Z][a-zñ]+\\s*,\\s*[A-Z]/.test(t)) continue
+      headline = t
+      break
+    }
+  }
+
+  // ── Overview / description — long paragraph in About section ─
   let description = null
   const paras = Array.from(
-    document.querySelectorAll('main section p, main section span[dir], main section div[class*="about"] p')
+    document.querySelectorAll('main section p, main section span[dir], main section div[class*="about"] p, main section div[class*="overview"] p')
   )
   for (const p of paras) {
     const t = textOf(p)
-    if (t && t.length >= 60 && t.length <= 3000 && !t.includes('·')) {
+    if (t && t.length >= 80 && t.length <= 5000 && !t.startsWith('Follow') && !t.includes('·\\s*Follow')) {
       description = t
       break
     }
   }
 
+  // ── HQ location ──────────────────────────────────────────────
+  // Primary path: the "Locations" section shows "Primary · Headquarters"
+  // followed by the full street address. Look for an H2/H3 containing
+  // "Locations" / "Ubicaciones" and grab the nearest address block.
+  let hqLocation = null
+  const locHeading = Array.from(document.querySelectorAll('h2, h3')).find(h => {
+    const t = (h.innerText || '').toLowerCase()
+    return /^locations\\b|^ubicaciones\\b/.test(t)
+  })
+  if (locHeading) {
+    const section = locHeading.closest('section') || locHeading.parentElement
+    if (section) {
+      // Find the element that contains "Headquarters" / "Sede" label and grab
+      // the NEXT text chunk (that's the address).
+      const labelEl = Array.from(section.querySelectorAll('span, p, div, h4'))
+        .find(el => /^(headquarters|sede|ubicación principal)$/i.test((el.innerText || '').trim()))
+      if (labelEl) {
+        // The address is either the next sibling or within the same card
+        let candidate = labelEl.nextElementSibling
+        while (candidate) {
+          const t = textOf(candidate)
+          if (t && t.length > 5 && t.length < 200 && !/^get directions$/i.test(t)) {
+            hqLocation = t
+            break
+          }
+          candidate = candidate.nextElementSibling
+        }
+      }
+      // Fallback: any line in the section that looks like a full address
+      // (contains a comma and a common country code / word)
+      if (!hqLocation) {
+        const lines = (section.innerText || '').split(/\\n+/).map(s => s.trim())
+        for (const line of lines) {
+          if (line.length > 10 && line.length < 200 && line.includes(',') && /\\b(GB|US|UK|USA|CL|MX|AR|ES|CA|FR|DE|Chile|España|Estados Unidos)\\b/i.test(line)) {
+            hqLocation = line
+            break
+          }
+        }
+      }
+    }
+  }
+  // Last-resort fallback: the old dt/dd pair for "Headquarters" (city name only)
+  if (!hqLocation) {
+    hqLocation = pickDl(['headquarters', 'sede', 'ubicación'])
+  }
+
   // ── Followers ────────────────────────────────────────────────
   let followers = null
-  const bodyText = document.body.innerText || ''
   const fm = bodyText.match(/([\\d.,]+)\\s+(followers|seguidores)/i)
   if (fm) {
     followers = parseInt(fm[1].replace(/[^\\d]/g, ''), 10) || null
   }
 
-  return { description, domain, websiteUrl, industry, companySize, employeeCountEstimate, hqLocation, logoUrl, followers }
+  return {
+    headline,
+    description,
+    domain,
+    websiteUrl,
+    industry,
+    companySize,
+    employeeCountEstimate,
+    employeesOnLinkedIn,
+    foundedYear,
+    hqLocation,
+    logoUrl,
+    followers,
+  }
 })()
 `.trim()
