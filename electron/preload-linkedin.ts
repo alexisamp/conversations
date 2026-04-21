@@ -315,24 +315,23 @@ function scrapeCompany(): string | null {
   return null
 }
 
-// Extract company info (name + URL + logo) from the LinkedIn profile's
-// top-card current-role widget. Three layers of detection, most-reliable
-// first:
+// Extract company info (name + URL + logo) from a LinkedIn profile.
 //
-//   L1: aria-label on a <button> or <a> — "Current company: Granola" /
-//       "Empresa actual: Granola". Most robust post-2024 because LI uses
-//       this for accessibility on role-widget buttons even when there's no
-//       anchor tag. Covers the variant where the current-role row is a
-//       <button> (no href).
+// User-confirmed insight (Jack Cully, 2026-04): the company name/logo in
+// the TOP CARD is a scroll-button (no href) — clicking it only scrolls to
+// the Experience section. The real /company/<slug>/ anchor only exists
+// inside <section id="experience">. Previous scope-to-topcard scrapers
+// missed it entirely.
 //
-//   L2: <a href="/company/<slug>/"> anchor text. Covers profiles where the
-//       current-role renders as a real anchor, not a button.
+// New strategy — name-first, URL-second:
+//   1. Get the company NAME via the existing text paths (aria-label,
+//      top-card anchor, block-walker fallback, or parseCompanyFromHeadline).
+//   2. With the name in hand, scan the WHOLE <main> for /company/ anchors
+//      whose innerText matches the name (case-insensitive). Take the first
+//      match as the authoritative URL. Logo = nearest <img> to that anchor.
 //
-//   L3: null — caller should fall back to scrapeCompany() (block walker)
-//       and parseCompanyFromHeadline().
-//
-// All layers reject education rows via EDUCATION_KEYWORD_RE — "Marketing
-// Week Mini MBA..." never wins.
+// This decouples "what is the company" from "where is its link", so we
+// work regardless of which LI layout variant is in play.
 function scrapeCompanyInfo(): { name: string | null; url: string | null; logoUrl: string | null } {
   function normalizeUrl(raw: string): string | null {
     const m = raw.match(/linkedin\.com\/company\/([^/?#]+)/)
@@ -403,38 +402,76 @@ function scrapeCompanyInfo(): { name: string | null; url: string | null; logoUrl
     return null
   }
 
-  // ── L1: aria-label with "Current company: X" / "Empresa actual: X" ──
+  // ── Step 1: extract NAME via best-available signal ─────────────────
+  // a) aria-label "Current company: X" / "Empresa actual: X"
+  let name: string | null = null
   const COMPANY_LABEL_RE = /^(?:current company|empresa actual|current role)[:\s]+(.+)$/i
-  const labeled = Array.from(
-    scope.querySelectorAll<HTMLElement>('[aria-label]'),
-  )
+  const labeled = Array.from(scope.querySelectorAll<HTMLElement>('[aria-label]'))
   for (const el of labeled) {
     const label = el.getAttribute('aria-label') ?? ''
     const m = label.match(COMPANY_LABEL_RE)
     if (!m) continue
-    const name = m[1].trim()
-    if (!name || EDUCATION_KEYWORD_RE.test(name)) continue
-
-    const url = findCompanyUrlNear(el)
-    const logoUrl = pickLogo(el)
-    return { name, url, logoUrl }
+    const candidate = m[1].trim()
+    if (candidate && !EDUCATION_KEYWORD_RE.test(candidate)) {
+      name = candidate; break
+    }
   }
 
-  // ── L2: /company/ anchor — text inside the <a> ──
-  const anchors = Array.from(
-    scope.querySelectorAll<HTMLAnchorElement>('a[href*="/company/"]'),
+  // b) top-card /company/ anchor text (when the role IS a real anchor)
+  if (!name) {
+    const topAnchors = Array.from(scope.querySelectorAll<HTMLAnchorElement>('a[href*="/company/"]'))
+    for (const a of topAnchors) {
+      const text = cleanText(a)
+      if (text && !EDUCATION_KEYWORD_RE.test(text)) { name = text; break }
+    }
+  }
+
+  // (c/d fallbacks happen at the caller — scrapeCompany + parseCompanyFromHeadline)
+
+  // ── Step 2: find URL + logo by matching against ANY /company/ anchor
+  // on the page whose text matches the name. The Experience section is
+  // where post-2024 LI puts the actual link, and the top-card is just a
+  // scroll-button. ──
+  const allAnchors = Array.from(
+    mainEl.querySelectorAll<HTMLAnchorElement>('a[href*="/company/"]'),
   )
-  for (const a of anchors) {
-    const text = cleanText(a)
-    if (!text) continue
-    if (EDUCATION_KEYWORD_RE.test(text)) continue
+
+  function matchesName(anchorText: string, target: string | null): boolean {
+    if (!target) return false
+    const a = anchorText.trim().toLowerCase().replace(/\s+/g, ' ')
+    const b = target.trim().toLowerCase().replace(/\s+/g, ' ')
+    if (!a || !b) return false
+    return a === b || a.includes(b) || b.includes(a)
+  }
+
+  // Pass 1: anchors whose text exactly matches the scraped name
+  if (name) {
+    for (const a of allAnchors) {
+      const t = cleanText(a)
+      if (!t) continue
+      if (EDUCATION_KEYWORD_RE.test(t)) continue
+      if (matchesName(t, name)) {
+        const url = normalizeUrl(a.href)
+        const row = a.closest('li, section, div') ?? a
+        const logoUrl = pickLogo(row)
+        return { name, url, logoUrl }
+      }
+    }
+  }
+
+  // Pass 2: first non-education /company/ anchor anywhere in <main>.
+  // Used when we have no name but still want to give the caller SOMETHING.
+  for (const a of allAnchors) {
+    const t = cleanText(a)
+    if (!t) continue
+    if (EDUCATION_KEYWORD_RE.test(t)) continue
     const url = normalizeUrl(a.href)
     const row = a.closest('li, section, div') ?? a
     const logoUrl = pickLogo(row)
-    return { name: text, url, logoUrl }
+    return { name: name ?? t, url, logoUrl }
   }
 
-  return { name: null, url: null, logoUrl: null }
+  return { name, url: null, logoUrl: null }
 }
 
 function scrapeAbout(): string | null {
