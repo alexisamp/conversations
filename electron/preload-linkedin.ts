@@ -252,19 +252,28 @@ function looksLikeLocation(t: string): boolean {
   return true
 }
 
-function scrapeLocation(): string | null {
+function scrapeLocation(excludeCompany?: string | null): string | null {
   const blocks = getTopCardTextBlocks()
   if (blocks.length === 0) return null
+
+  const excludeNorm = excludeCompany
+    ? excludeCompany.trim().toLowerCase().replace(/\s+/g, ' ')
+    : null
+  const isExcluded = (t: string): boolean =>
+    excludeNorm !== null &&
+    t.trim().toLowerCase().replace(/\s+/g, ' ') === excludeNorm
 
   const fIdx = findFollowersIndex(blocks)
 
   // Walk BACKWARD from just-before-followers and return the first block
-  // that passes location heuristics (skip education rows sitting between
-  // followers and the real location — Jack Cully case where "MBA" lives
-  // at fIdx-1 and "United Kingdom" at fIdx-2).
+  // that passes location heuristics — and isn't the scraped company name
+  // (LI sometimes renders the company name as both an anchor AND a <p>,
+  // so a naive location pick could grab "Granola" when real location is
+  // the row above).
   if (fIdx > 0) {
     for (let i = fIdx - 1; i >= 1; i--) {
       const t = blocks[i].text
+      if (isExcluded(t)) continue
       if (looksLikeLocation(t)) return t
     }
   }
@@ -273,6 +282,7 @@ function scrapeLocation(): string | null {
   // pattern (comma-separated location is a strong signal).
   for (const b of blocks) {
     if (!b.text.includes(',')) continue
+    if (isExcluded(b.text)) continue
     if (looksLikeLocation(b.text)) return b.text
   }
   return null
@@ -617,7 +627,10 @@ function tick(): void {
     const company = companyInfo.name ?? scrapeCompany()
     const companyLinkedinUrl = companyInfo.url
     const companyLogoUrl = companyInfo.logoUrl
-    const location = scrapeLocation()
+    // Pass the scraped company to scrapeLocation so it doesn't accidentally
+    // pick up the company name as location (LI sometimes renders the name
+    // in both the role-widget anchor AND a <p> near the location row).
+    const location = scrapeLocation(company)
     const about = scrapeAbout()
     const photoUrl = scrapePhotoUrl()
     const avatarDataUrl = scrapeAvatar()
