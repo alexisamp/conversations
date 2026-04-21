@@ -1073,7 +1073,7 @@ async function enrichContactFromLinkedinProfile(
   const supabase = getSupabase()
   const { data: current, error: fetchErr } = await supabase
     .from('outreach_logs')
-    .select('name, linkedin_url')
+    .select('name, linkedin_url, personal_context')
     .eq('id', input.contact_id)
     .maybeSingle()
   if (fetchErr || !current) {
@@ -1090,11 +1090,19 @@ async function enrichContactFromLinkedinProfile(
   const effectiveLinkedinUrl = existingLinkedinUrl ?? input.linkedinUrl ?? null
 
   const updates: Record<string, unknown> = {}
-  // LinkedIn-sourced fields: always overwrite when scrape has a value
+  // "Refresh-able" LI fields: overwrite when the scrape has a value. These
+  // change often and LI is the authoritative source.
   if (input.jobTitle) updates.job_title = input.jobTitle
   if (company) updates.company = company
   if (input.location) updates.location = input.location
-  if (input.about) updates.personal_context = input.about
+  // "Sensitive" fields — preserve when the user already has something curated.
+  // personal_context is typically hand-curated from WA conversations
+  // ("met at X, runs Y, referred by Z") and much more useful than LI's
+  // generic "about" blurb. Only fill when the stored value is empty.
+  const storedContext = (current as { personal_context: string | null }).personal_context ?? ''
+  if (input.about && !storedContext.trim()) {
+    updates.personal_context = input.about
+  }
   // Attach-to-existing: write linkedin_url when the row doesn't have one yet
   if (!existingLinkedinUrl && input.linkedinUrl) {
     updates.linkedin_url = input.linkedinUrl

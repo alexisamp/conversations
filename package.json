@@ -1,6 +1,6 @@
 {
   "name": "conversations",
-  "version": "0.0.12",
+  "version": "0.0.13",
   "private": true,
   "description": "Native macOS WhatsApp client with a reThink CRM sidebar",
   "main": "dist/electron/main.js",
