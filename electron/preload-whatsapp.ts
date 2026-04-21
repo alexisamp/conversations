@@ -83,6 +83,38 @@ function lastSenderIdentity(
   return suffix === 'c.us' ? { phone: value } : { lid: value }
 }
 
+// Check whether the active chat is a group by scanning the first few visible
+// messages' data-ids for an @g.us segment. data-ids are the most reliable
+// signal post-2026-04 — WhatsApp kept them intact even while scrambling the
+// rest of the DOM. Returns the group's raw "<id>@g.us" identifier when found.
+function probeGroupIdFromMessages(): string | null {
+  // Only look at messages in the center pane area (skip preview tooltips etc.)
+  const msgs = Array.from(document.querySelectorAll<HTMLElement>('[data-id]'))
+  for (const el of msgs.slice(0, 50)) {
+    const dataId = el.getAttribute('data-id')
+    if (!dataId) continue
+    const seg = firstChatSegment(dataId)
+    if (seg && seg.endsWith('@g.us')) return seg
+  }
+  return null
+}
+
+// Heuristic group-ish text in the header subtitle (used when messages haven't
+// rendered yet, e.g. just-switched-to an empty chat). Covers EN + ES.
+function headerHasGroupSubtitle(centerHeader: HTMLElement): boolean {
+  const text = (centerHeader.innerText ?? '').toLowerCase()
+  // "5 members" / "5 miembros" / "5 participants" / "5 participantes"
+  if (/\d+\s+(members|miembros|participants|participantes)\b/.test(text)) return true
+  // "You, Alice, Bob" style participant list — 2+ commas in subtitle is a
+  // strong signal for a group (1:1 subtitles are "online" / "last seen…" / phone)
+  const subtitleSpans = centerHeader.querySelectorAll<HTMLElement>('span[dir="auto"]')
+  if (subtitleSpans.length >= 2) {
+    const secondLine = subtitleSpans[1]?.innerText?.trim() ?? ''
+    if ((secondLine.match(/,/g) ?? []).length >= 2) return true
+  }
+  return false
+}
+
 function getActiveChatIdentity(): ChatIdentity {
   // New DOM (2026-04): find the chat-list row that is [aria-selected="true"].
   // It lives under <div role="grid" aria-label="Chat list"> so we can scope
@@ -92,19 +124,21 @@ function getActiveChatIdentity(): ChatIdentity {
     document.querySelector('[role="grid"]')
   const selectedRow = chatList?.querySelector('[aria-selected="true"]')
 
-  // Group detection: when a group is active the chat-list row contains the
-  // group's display name (no distinguishing marker we can rely on yet —
-  // defer group detection until we have a stable signal). For now, any
-  // selected row is treated as a 1:1 person; group sidebar will light up
-  // only when the center pane itself shows the group participant bar.
-  // TODO: re-enable group detection with a proper new-DOM probe.
+  // Group detection (re-enabled): two-stage probe.
+  //   1. Scan visible message data-ids for an @g.us segment — authoritative.
+  //   2. Fall back to header subtitle heuristic when no messages have
+  //      rendered yet (just-activated empty chat).
+  const probedGroupId = probeGroupIdFromMessages()
+  if (probedGroupId) return { kind: 'group', groupId: probedGroupId }
 
   // Header of the active chat (center pane). Holds contact display name.
   let headerName: string | null = null
+  let centerHeader: HTMLElement | null = null
   const headers = Array.from(document.querySelectorAll('header'))
   for (const h of headers) {
     const r = h.getBoundingClientRect()
     if (r.left < 400) continue // skip left-column header
+    centerHeader = h as HTMLElement
     const spans = Array.from(h.querySelectorAll('span[dir="auto"]'))
     for (const s of spans) {
       const text = (s as HTMLElement).innerText?.trim()
@@ -120,6 +154,15 @@ function getActiveChatIdentity(): ChatIdentity {
 
   // If there's neither a selected row nor a header name, no chat is active
   if (!selectedRow && !headerName) return { kind: 'none' }
+
+  // Group fallback probe: message-based detection above returned nothing
+  // (no messages rendered yet), but the header subtitle shouts "group".
+  // We don't have the real @g.us id in this path — emit a synthetic
+  // placeholder so the sidebar still shows the group UI; the real id
+  // will appear on the next tick once a message lands in the DOM.
+  if (centerHeader && headerName && headerHasGroupSubtitle(centerHeader)) {
+    return { kind: 'group', groupId: `pending:${headerName}` }
+  }
 
   // Prefer header name (always reflects the OPEN chat). Fall back to row text
   // for robustness.
