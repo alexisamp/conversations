@@ -83,14 +83,36 @@ function lastSenderIdentity(
   return suffix === 'c.us' ? { phone: value } : { lid: value }
 }
 
-// Check whether the active chat is a group by scanning the first few visible
-// messages' data-ids for an @g.us segment. data-ids are the most reliable
-// signal post-2026-04 — WhatsApp kept them intact even while scrambling the
-// rest of the DOM. Returns the group's raw "<id>@g.us" identifier when found.
+// Check whether the active chat is a group by scanning visible messages'
+// data-ids for an @g.us segment. data-ids are the most reliable signal
+// post-2026-04 — WhatsApp kept them intact even while scrambling the rest
+// of the DOM.
+//
+// CRITICAL: scope to the center-pane message list only. The chat list on
+// the left also contains [data-id] elements for each row (that's how WA
+// tracks chat-preview state). If we scan those, any group in the sidebar
+// pollutes every 1:1 detection — including breaking message capture
+// entirely, because captured 1:1 messages then get the group-skip filter
+// applied downstream.
 function probeGroupIdFromMessages(): string | null {
-  // Only look at messages in the center pane area (skip preview tooltips etc.)
+  // Find an element whose bounding rect is clearly in the right-hand
+  // conversation pane (left > 400px) and which is NOT inside the chat-list
+  // grid. We limit the scan to the first ~200 data-id nodes to cap work on
+  // chats with a lot of history.
+  const chatListEl =
+    document.querySelector('[role="grid"][aria-label="Chat list"]') ??
+    document.querySelector('[role="grid"]')
   const msgs = Array.from(document.querySelectorAll<HTMLElement>('[data-id]'))
-  for (const el of msgs.slice(0, 50)) {
+  let checked = 0
+  for (const el of msgs) {
+    if (checked >= 200) break
+    // Skip if the element is inside the chat-list grid (left pane previews)
+    if (chatListEl && chatListEl.contains(el)) continue
+    // Also skip zero-sized or far-left elements as a belt-and-suspenders check
+    const r = el.getBoundingClientRect()
+    if (r.width === 0 || r.height === 0) continue
+    if (r.left < 400) continue
+    checked++
     const dataId = el.getAttribute('data-id')
     if (!dataId) continue
     const seg = firstChatSegment(dataId)
@@ -299,6 +321,11 @@ type CapturedMessage = {
   sender_name: string | null
   text: string | null
   timestamp_ms: number
+  // True when we parsed the timestamp out of WA's data-pre-plain-text.
+  // False means we fell back to Date.now() — use staleness checks only
+  // when this is true (a fallback timestamp is indistinguishable from a
+  // live message by definition).
+  timestamp_parsed: boolean
 }
 
 function parseTimestampFromPre(pre: string | null): number | null {
@@ -361,7 +388,9 @@ function buildCapturedMessage(msg: Element): CapturedMessage | null {
   const pre = preEl?.getAttribute('data-pre-plain-text') ?? null
   const nameMatch = pre?.match(/\]\s*([^:]+):/)
   const senderName = nameMatch ? nameMatch[1].trim() : null
-  const timestampMs = parseTimestampFromPre(pre) ?? Date.now()
+  const parsedTs = parseTimestampFromPre(pre)
+  const timestampMs = parsedTs ?? Date.now()
+  const timestampParsed = parsedTs !== null
 
   const text = extractTextFromMessageEl(msg)
 
@@ -375,6 +404,7 @@ function buildCapturedMessage(msg: Element): CapturedMessage | null {
     sender_name: senderName,
     text,
     timestamp_ms: timestampMs,
+    timestamp_parsed: timestampParsed,
   }
 }
 
@@ -402,12 +432,29 @@ function handleNewMessageNode(node: Element): void {
     if (processedMessages.has(dataId)) continue
     processedMessages.add(dataId)
 
-    // Skip historical-render pass: anything added within 5s of the chat
-    // becoming active is WA's own DOM rehydration, not a live message.
-    if (Date.now() - currentChatActivatedAt < 5000) continue
+    // Skip historical-render pass: anything added within 15s of the chat
+    // becoming active is WA's own DOM rehydration, not a live message. The
+    // old 5s window was too short — WA often takes longer than that to
+    // finish rendering history on chats with many messages, which leaked
+    // rehydrated rows into the capture pipeline with interaction_date=today.
+    if (Date.now() - currentChatActivatedAt < 15000) continue
 
     const captured = buildCapturedMessage(el)
     if (!captured) continue
+
+    // Staleness guard: even after the rehydration window, WA keeps mounting
+    // historical rows while the user scrolls up. Parsed timestamps from
+    // data-pre-plain-text tell the truth — a live message is always within
+    // a few seconds of Date.now(); anything > 60s old is history.
+    //
+    // Only applied when we have a real parsed timestamp (not the Date.now()
+    // fallback). If the fallback fired we can't tell, so we stay permissive.
+    if (
+      captured.timestamp_parsed &&
+      captured.timestamp_ms < Date.now() - 60_000
+    ) {
+      continue
+    }
 
     // Scope cut (phase 3b): skip group messages entirely. The session
     // capture pipeline is 1:1 only for now; groups are visual-only and
