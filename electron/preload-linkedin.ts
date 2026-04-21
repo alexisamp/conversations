@@ -240,34 +240,40 @@ function findFollowersIndex(blocks: TopCardBlock[]): number {
   return -1
 }
 
+function looksLikeLocation(t: string): boolean {
+  // Length/boundary
+  if (t.length > 120 || t.length < 2) return false
+  if (FOLLOWERS_PATTERN.test(t)) return false
+  if (t.includes('|')) return false
+  // Reject education/course rows that sometimes land at fIdx-1
+  if (EDUCATION_KEYWORD_RE.test(t)) return false
+  // Reject headline-ish ("Title at Company", "of Company", C-suite)
+  if (/\b(at|of)\b|Head |Director|Engineer|Manager|Founder|CEO|CTO|CFO/i.test(t)) return false
+  return true
+}
+
 function scrapeLocation(): string | null {
   const blocks = getTopCardTextBlocks()
   if (blocks.length === 0) return null
 
   const fIdx = findFollowersIndex(blocks)
-  // Location is the block immediately before followers/connections.
+
+  // Walk BACKWARD from just-before-followers and return the first block
+  // that passes location heuristics (skip education rows sitting between
+  // followers and the real location — Jack Cully case where "MBA" lives
+  // at fIdx-1 and "United Kingdom" at fIdx-2).
   if (fIdx > 0) {
-    const candidate = blocks[fIdx - 1].text
-    // Sanity bounds: a location is short and doesn't look like a headline
-    // (the headline has "at X" / "of X" / common C-suite words).
-    if (candidate.length <= 120 && !/\b(at|of)\b|Head |Director|Engineer|Manager|Founder|CEO|CTO|CFO/i.test(candidate)) {
-      return candidate
+    for (let i = fIdx - 1; i >= 1; i--) {
+      const t = blocks[i].text
+      if (looksLikeLocation(t)) return t
     }
   }
 
-  // Fallback: heuristic scan for "City, Region"-style blocks (used when the
-  // followers block didn't render yet — race with page load).
+  // Followers block didn't render yet — scan forward for a "City, Region"
+  // pattern (comma-separated location is a strong signal).
   for (const b of blocks) {
-    const t = b.text
-    if (t.length > 120) continue
-    if (FOLLOWERS_PATTERN.test(t)) continue
-    if (t.includes('|')) continue
-    if (t.includes(',')) {
-      // Not the headline: "Title, Company" headlines exist. Filter by word count
-      // and C-suite patterns.
-      if (/\b(at|of)\b|Head |Director|Engineer|Manager|Founder|CEO|CTO|CFO/i.test(t)) continue
-      return t
-    }
+    if (!b.text.includes(',')) continue
+    if (looksLikeLocation(b.text)) return b.text
   }
   return null
 }
@@ -275,82 +281,114 @@ function scrapeLocation(): string | null {
 /** Positional company scraper — the <p> between the headline (index 0) and
  *  the location (index fIdx-1). Returns null if no intermediate block. */
 function scrapeCompany(): string | null {
+  // LEGACY block-based fallback. Primary path is scrapeCompanyInfo() which
+  // reads the company name directly from the <a href="/company/..."> anchor
+  // (modern LI renders the name inside the anchor, never as a <p>, so block
+  // walking can't see it).
   const blocks = getTopCardTextBlocks()
   if (blocks.length === 0) return null
 
   const fIdx = findFollowersIndex(blocks)
-  if (fIdx < 2) return null // need headline + company + location + followers
+  if (fIdx < 2) return null
 
-  // Walk from position 1 (right after the headline at 0) up to fIdx-2 and
-  // pick the FIRST block that looks like a current-employer company —
-  // skipping education rows (Jack's "Marketing Week Mini MBA..." case where
-  // a course/MBA is rendered between headline and location alongside the
-  // real current company "Granola").
-  //
-  // Previously we picked blocks[fIdx-2] unconditionally, which returned the
-  // LAST current-role block and often grabbed the education row.
   for (let i = 1; i <= fIdx - 2; i++) {
     const t = blocks[i].text
     if (t.length > 100) continue
-    // Skip headline-style text
     if (/\b(at|of)\b|Head |Director|Engineer|Manager|Founder|CEO|CTO|CFO/i.test(t)) continue
-    // Skip education/certification rows
     if (EDUCATION_KEYWORD_RE.test(t)) continue
+    // Location-looking blocks (comma separators, short country words) aren't
+    // companies. Rejecting here avoids picking "United Kingdom" / "Santiago,
+    // Chile" as a company.
+    if (looksLikeLocation(t)) continue
     return t
   }
   return null
 }
 
-// Extract the LinkedIn company URL (and logo) for the current role. The
-// top-card area usually has a short anchor linking to /company/<slug>/ next
-// to the company name text — this is what we want. Experience section also
-// has /company/ links but the first one on the page tends to be the current
-// role, which matches the scrapeCompany() block at position fIdx-2.
-function scrapeCompanyLinkedin(): { url: string | null; logoUrl: string | null } {
-  // Normalize to a canonical "https://www.linkedin.com/company/<slug>/" URL,
-  // stripping search params and nested paths.
-  function normalize(raw: string): string | null {
+// Extract company info (name + URL + logo) from the LinkedIn profile's
+// top-card current-role anchor. Modern LI renders the company name INSIDE
+// the <a href="/company/<slug>/"> element (as a <span>), not as a separate
+// <p>. getTopCardTextBlocks() only walks <p>, so the company name never
+// surfaces through the block-position logic. Anchor-based detection is the
+// authoritative path for company fields; block-based is a degraded fallback.
+//
+// Filters out education anchors (e.g. "Marketing Week Mini MBA with Mark
+// Ritson") via EDUCATION_KEYWORD_RE so we pick the real employer even when
+// the top card lists both current company and a current course.
+function scrapeCompanyInfo(): { name: string | null; url: string | null; logoUrl: string | null } {
+  function normalizeUrl(raw: string): string | null {
     const m = raw.match(/linkedin\.com\/company\/([^/?#]+)/)
     if (!m) return null
     return `https://www.linkedin.com/company/${m[1]}/`
   }
 
+  // Clean anchor text — remove hidden screen-reader labels, trailing
+  // "Current company: X" prefixes, and collapse whitespace.
+  function cleanText(a: HTMLAnchorElement): string | null {
+    const raw = (a.innerText ?? a.textContent ?? '').trim().replace(/\s+/g, ' ')
+    if (!raw) return null
+    // Screen reader often injects "Current company: " or similar.
+    const stripped = raw
+      .replace(/^(current company:?\s*|current role:?\s*)/i, '')
+      .trim()
+    if (!stripped || stripped.length > 100) return null
+    return stripped
+  }
+
   const mainEl = document.querySelector('main') ?? document.body
-  const anchors = Array.from(
-    mainEl.querySelectorAll<HTMLAnchorElement>('a[href*="/company/"]'),
-  )
-  // Prefer anchors that are NOT in the nav/footer by checking they're under
-  // a <section> or in the top-card container.
-  const scoped = anchors.filter((a) => {
-    return a.closest('section, [data-view-name]')
+
+  // Only anchors inside the TOP-CARD area. Walk up from the profile photo
+  // to find the top card container (same approach as getTopCardTextBlocks).
+  const imgs = Array.from(mainEl.querySelectorAll<HTMLImageElement>('img'))
+  const photoImg = imgs.find((img) => {
+    const s = img.src || img.getAttribute('data-delayed-url') || ''
+    return s.includes('profile-displayphoto')
   })
-  const pool = scoped.length > 0 ? scoped : anchors
-  if (pool.length === 0) return { url: null, logoUrl: null }
+  let topCard: HTMLElement | null = photoImg?.parentElement ?? null
+  for (let i = 0; i < 8 && topCard; i++) {
+    if ((topCard.innerText ?? '').length > 200) break
+    topCard = topCard.parentElement
+  }
+  const scope = topCard ?? mainEl
 
-  const first = pool[0]
-  const url = normalize(first.href)
-  if (!url) return { url: null, logoUrl: null }
+  const anchors = Array.from(
+    scope.querySelectorAll<HTMLAnchorElement>('a[href*="/company/"]'),
+  )
+  if (anchors.length === 0) return { name: null, url: null, logoUrl: null }
 
-  // Logo: nearby <img> in the same experience row / top-card block. LI uses
-  // media.licdn.com/dms/image/...company-logo_... for company avatars.
-  const row = first.closest('li, section, div[class*="experience"], div')
-  let logoUrl: string | null = null
-  if (row) {
-    const imgs = Array.from(row.querySelectorAll<HTMLImageElement>('img'))
-    for (const img of imgs) {
+  // Prefer anchors whose text is not an education row. Walk through all
+  // anchors and pick the first company-like one.
+  for (const a of anchors) {
+    const text = cleanText(a)
+    if (!text) continue
+    if (EDUCATION_KEYWORD_RE.test(text)) continue
+
+    const url = normalizeUrl(a.href)
+
+    // Logo: <img> inside the anchor or its close ancestor.
+    let logoUrl: string | null = null
+    const row = a.closest('li, section, div')
+    const rowImgs = row
+      ? Array.from(row.querySelectorAll<HTMLImageElement>('img'))
+      : []
+    for (const img of rowImgs) {
       const s = img.src || img.getAttribute('data-delayed-url') || ''
       if (s.includes('company-logo') || s.includes('company_logo')) {
         logoUrl = s
         break
       }
-      // Fallback: any media.licdn.com image near the company anchor is likely
-      // the logo (profile photos sit in a different block).
-      if (!logoUrl && s.includes('media.licdn.com')) {
+      // Fallback: any media.licdn.com image near the anchor, EXCEPT the
+      // profile photo (which lives at the top of the same card).
+      if (!logoUrl && s.includes('media.licdn.com') && !s.includes('profile-displayphoto')) {
         logoUrl = s
       }
     }
+
+    return { name: text, url, logoUrl }
   }
-  return { url, logoUrl }
+
+  // All anchors looked like education — give up on company.
+  return { name: null, url: null, logoUrl: null }
 }
 
 function scrapeAbout(): string | null {
@@ -536,8 +574,13 @@ function tick(): void {
     // Fire the one-shot diagnostic once we have a name (DOM is hydrated).
     diagnosePhotoDom(parsed.slug, name)
     const jobTitle = scrapeJobTitle()
-    const company = scrapeCompany()
-    const { url: companyLinkedinUrl, logoUrl: companyLogoUrl } = scrapeCompanyLinkedin()
+    // Anchor-based company detection is authoritative — modern LI DOM holds
+    // the company name inside the <a>, not in a <p>. Falls back to the
+    // block-walking scrapeCompany() only when anchors are unavailable.
+    const companyInfo = scrapeCompanyInfo()
+    const company = companyInfo.name ?? scrapeCompany()
+    const companyLinkedinUrl = companyInfo.url
+    const companyLogoUrl = companyInfo.logoUrl
     const location = scrapeLocation()
     const about = scrapeAbout()
     const photoUrl = scrapePhotoUrl()
