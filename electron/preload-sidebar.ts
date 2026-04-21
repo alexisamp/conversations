@@ -139,6 +139,7 @@ export type LiState =
       slug: string
       name: string | null
       jobTitle: string | null
+      company: string | null
       location: string | null
       about: string | null
       photoUrl: string | null
@@ -149,6 +150,7 @@ export type EnrichFromLiInput = {
   contact_id: string
   name: string | null
   jobTitle: string | null
+  company: string | null
   location: string | null
   about: string | null
   photoUrl: string | null
@@ -158,6 +160,7 @@ export type CreateFromLiInput = {
   url: string
   name: string
   jobTitle: string | null
+  company: string | null
   location: string | null
   about: string | null
   photoUrl: string | null

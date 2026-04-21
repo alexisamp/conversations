@@ -13,6 +13,7 @@ type LinkedinProfile = {
   slug: string
   name: string | null
   jobTitle: string | null
+  company: string | null
   location: string | null
   about: string | null
   photoUrl: string | null
@@ -204,32 +205,78 @@ function getTopCardTextBlocks(): TopCardBlock[] {
   return blocks
 }
 
+// ─── Positional scrapers ────────────────────────────────────────────────
+// The top-card blocks always follow this order (LinkedIn has kept it
+// stable across 2023–2026 redesigns):
+//   [0] headline (job title) — always the first substantive <p>
+//   [1..N-3] optional current-company rows
+//   [N-2] location ("City, Region" OR "City, Country" OR single country word)
+//   [N-1] "N followers" / "N connections"
+//
+// The old heuristic-on-comma scrapers returned the headline as location on
+// profiles whose headline contained a comma ("Data Scientist, AI & Growth").
+// The fix: anchor on the followers/connections block at the END and walk
+// backwards.
+
+const FOLLOWERS_PATTERN = /\d+\s*(followers|connections|seguidores|contactos)\s*$/i
+
+function findFollowersIndex(blocks: TopCardBlock[]): number {
+  for (let i = blocks.length - 1; i >= 0; i--) {
+    if (FOLLOWERS_PATTERN.test(blocks[i].text)) return i
+  }
+  return -1
+}
+
 function scrapeLocation(): string | null {
   const blocks = getTopCardTextBlocks()
-  // A location is short, has a comma OR is a common single-word
-  // country/region, and doesn't look like a headline.
+  if (blocks.length === 0) return null
+
+  const fIdx = findFollowersIndex(blocks)
+  // Location is the block immediately before followers/connections.
+  if (fIdx > 0) {
+    const candidate = blocks[fIdx - 1].text
+    // Sanity bounds: a location is short and doesn't look like a headline
+    // (the headline has "at X" / "of X" / common C-suite words).
+    if (candidate.length <= 120 && !/\b(at|of)\b|Head |Director|Engineer|Manager|Founder|CEO|CTO|CFO/i.test(candidate)) {
+      return candidate
+    }
+  }
+
+  // Fallback: heuristic scan for "City, Region"-style blocks (used when the
+  // followers block didn't render yet — race with page load).
   for (const b of blocks) {
     const t = b.text
     if (t.length > 120) continue
-    if (/followers$|connections$/i.test(t)) continue
+    if (FOLLOWERS_PATTERN.test(t)) continue
     if (t.includes('|')) continue
-    // Locations usually contain "City, Region" or "City, Country"
-    if (t.includes(',')) return t
-    // Or a single well-known location word — rough heuristic: 1-3 words, all
-    // properly capitalized, no lowercase after first letter of each word.
-    const words = t.split(/\s+/)
-    if (words.length >= 1 && words.length <= 4) {
-      const allTitleCase = words.every((w) => /^[A-Z][a-zA-Z]*$/.test(w))
-      if (allTitleCase && t.length >= 4) {
-        // Make sure it's not the headline / job title (those are longer
-        // and more descriptive)
-        if (!/\bat\b|\bof\b|Head|Director|Engineer|Manager|Founder|CEO|CTO|CFO/i.test(t)) {
-          return t
-        }
-      }
+    if (t.includes(',')) {
+      // Not the headline: "Title, Company" headlines exist. Filter by word count
+      // and C-suite patterns.
+      if (/\b(at|of)\b|Head |Director|Engineer|Manager|Founder|CEO|CTO|CFO/i.test(t)) continue
+      return t
     }
   }
   return null
+}
+
+/** Positional company scraper — the <p> between the headline (index 0) and
+ *  the location (index fIdx-1). Returns null if no intermediate block. */
+function scrapeCompany(): string | null {
+  const blocks = getTopCardTextBlocks()
+  if (blocks.length === 0) return null
+
+  const fIdx = findFollowersIndex(blocks)
+  if (fIdx < 2) return null // need headline + company + location + followers
+  // Location at fIdx-1; company at fIdx-2 (if exists and distinct from headline).
+  const companyBlock = blocks[fIdx - 2]
+  if (!companyBlock) return null
+  const t = companyBlock.text
+  // Reject if it looks like a headline (long, multiple title words, "at X")
+  if (t.length > 100) return null
+  if (/\b(at|of)\b|Head |Director|Engineer|Manager|Founder|CEO|CTO|CFO/i.test(t)) return null
+  // Reject if it's the headline block itself (fIdx-2 === 0 when there's no company row)
+  if (fIdx - 2 === 0) return null
+  return t
 }
 
 function scrapeAbout(): string | null {
@@ -415,6 +462,7 @@ function tick(): void {
     // Fire the one-shot diagnostic once we have a name (DOM is hydrated).
     diagnosePhotoDom(parsed.slug, name)
     const jobTitle = scrapeJobTitle()
+    const company = scrapeCompany()
     const location = scrapeLocation()
     const about = scrapeAbout()
     const photoUrl = scrapePhotoUrl()
@@ -424,6 +472,7 @@ function tick(): void {
       slug: parsed.slug,
       name,
       jobTitle,
+      company,
       location,
       about,
       photoUrl,
