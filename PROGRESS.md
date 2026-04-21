@@ -7,8 +7,8 @@
 
 ## Current status (as of 2026-04-20)
 
-**Local HEAD:** `07fbbd4 chore: bump to v0.0.9`
-**Latest GH Release:** [v0.0.9](https://github.com/alexisamp/conversations/releases/tag/v0.0.9) — built + published by GH Actions (macos-latest runner, ~1.5 min, no local memory needed)
+**Local HEAD:** `98eb444 chore: bump to v0.0.10`
+**Latest GH Release:** [v0.0.10](https://github.com/alexisamp/conversations/releases/tag/v0.0.10) — built + published by GH Actions (macos-latest runner, ~1.5 min, no local memory needed)
 **Release pipeline:** `.github/workflows/release.yml` — tag push `v*` → build → electron-builder publish → auto-promote draft → done
 **Working tree:** clean.
 
@@ -62,9 +62,7 @@ All features that used to live in a local-only `app.asar` hot-patch are now on G
 
 | # | What | Est. | Why now |
 |---|---|---|---|
-| Re-enable group detection | New DOM-based group probe (old one used `@g.us` in data-id which is gone) | 1-2h | Current groups show "No active chat". Low priority unless the author uses WA groups much. |
-| UX-1 | Full UI polish pass — typography, density, spacing, animations, maybe dark mode | 1 day | Discretionary. Author explicitly asked at some point. |
-| Referred-by picker in reThink | Today only Conversations' MapParticipantModal lets you set `outreach_logs.referred_by`. If contact is created directly in reThink (OutreachPanel), no picker → Pipeline expansion KPI misses that contribution. | 30 min | Medium. Matters when the author adds people manually after networking offline. |
+| UX-1 | Full UI polish pass — typography, density, spacing, animations, maybe dark mode | 1 day | Discretionary. Best done iteratively with user feedback, not autonomously. |
 
 ## Phases shipped this round ✅ (2026-04-20)
 
@@ -77,6 +75,8 @@ All features that used to live in a local-only `app.asar` hot-patch are now on G
 | Phase 8 | Removed WhatsApp content-script + sidebar screens + service-worker handlers from the Chrome extension. ~500 LOC gone. Prevents duplicate `interactions` rows now that Conversations owns WA capture. | reThink `53c8c3f` | — |
 | Phase 5.1 | LinkedIn photos uploaded to Supabase Storage on enrich + create. `electron/supabase/photo-upload.ts`, graceful fallback to raw CDN URL. | `aaed043` | v0.0.9 |
 | Phase 5.2 | Positional location + company scrapers in `preload-linkedin.ts`. Anchors on the "N followers/connections" block at the end of top-card `<p>`s and walks backwards. Plumbed new `company` field through LinkedinProfile → LiState → CreateFromLiInput / EnrichFromLiInput / IPC handlers / renderer callers. | `aaed043` | v0.0.9 |
+| Group detection | Re-enabled via two-stage probe: scan visible message data-ids for `@g.us` first segment (authoritative); fall back to header subtitle "N members / participantes" or ≥2-comma participant list when no messages rendered yet. Group message capture stays disabled per SPEC §2. | `5adad9e` | v0.0.10 |
+| Referred-by picker in reThink | OutreachPanel now has a searchable Introduced-by picker (live Supabase search, 6 results max, 220ms debounce). Closes the gap where contacts created via reThink (not Conversations' MapParticipantModal) couldn't be tagged with `referred_by`. | reThink `9b3d438` | reThink v0.1.120 |
 
 ---
 
