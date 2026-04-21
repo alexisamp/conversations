@@ -95,24 +95,10 @@ function lastSenderIdentity(
 // entirely, because captured 1:1 messages then get the group-skip filter
 // applied downstream.
 function probeGroupIdFromMessages(): string | null {
-  // Find an element whose bounding rect is clearly in the right-hand
-  // conversation pane (left > 400px) and which is NOT inside the chat-list
-  // grid. We limit the scan to the first ~200 data-id nodes to cap work on
-  // chats with a lot of history.
-  const chatListEl =
-    document.querySelector('[role="grid"][aria-label="Chat list"]') ??
-    document.querySelector('[role="grid"]')
-  const msgs = Array.from(document.querySelectorAll<HTMLElement>('[data-id]'))
-  let checked = 0
-  for (const el of msgs) {
-    if (checked >= 200) break
-    // Skip if the element is inside the chat-list grid (left pane previews)
-    if (chatListEl && chatListEl.contains(el)) continue
-    // Also skip zero-sized or far-left elements as a belt-and-suspenders check
-    const r = el.getBoundingClientRect()
-    if (r.width === 0 || r.height === 0) continue
-    if (r.left < 400) continue
-    checked++
+  // Scoped to the right-hand conversation pane via centerPaneMessageEls().
+  // Cap scan at 200 elements to bound work on chats with long history.
+  const msgs = centerPaneMessageEls()
+  for (const el of msgs.slice(0, 200)) {
     const dataId = el.getAttribute('data-id')
     if (!dataId) continue
     const seg = firstChatSegment(dataId)
@@ -242,20 +228,32 @@ function extractWaNameFromMessageEl(msg: Element): string | null {
 }
 
 // Scope helper: returns [data-id] elements in the right-hand conversation
-// pane only, skipping chat-list previews (which also carry data-ids). Mirrors
-// the fix in probeGroupIdFromMessages — without this scope, participant
-// extraction picks up sender ids from OTHER chats previewed in the sidebar.
+// pane only, skipping chat-list previews. The exclusion is defensive —
+// excludes the chat-list grid, any sidebar containers, and zero-sized
+// elements. Intentionally does NOT apply a `left >= Npx` rect filter
+// anymore: WA's layout varies with window width and dev tools open, and
+// hard-coded px thresholds were filtering out real messages for narrow
+// windows. If future regressions land here, the diagnostic in tick()
+// prints the center-pane samples for inspection.
 function centerPaneMessageEls(): HTMLElement[] {
-  const chatListEl =
-    document.querySelector('[role="grid"][aria-label="Chat list"]') ??
-    document.querySelector('[role="grid"]')
+  const chatListSelectors = [
+    '[role="grid"][aria-label="Chat list"]',
+    '[role="grid"][aria-label*="chat"]',
+    '[role="grid"][aria-label*="Chat"]',
+    '#pane-side',
+    '[data-testid="chat-list"]',
+    '[data-testid*="pane"]',
+  ]
+  const excludes = chatListSelectors
+    .map((s) => document.querySelector(s))
+    .filter((el): el is Element => el !== null)
+
   const all = Array.from(document.querySelectorAll<HTMLElement>('[data-id]'))
   const out: HTMLElement[] = []
   for (const el of all) {
-    if (chatListEl && chatListEl.contains(el)) continue
+    if (excludes.some((ex) => ex.contains(el))) continue
     const r = el.getBoundingClientRect()
     if (r.width === 0 || r.height === 0) continue
-    if (r.left < 400) continue
     out.push(el)
   }
   return out

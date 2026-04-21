@@ -159,8 +159,19 @@ function isJunkTopCardText(text: string): boolean {
   if (/^·\s*(1st|2nd|3rd|3\+|Following)/i.test(t)) return true
   if (/^(Contact info|Message|Follow|Connect|More|\+ Follow)$/i.test(t)) return true
   if (/^\d+(st|nd|rd|th)\+?$/i.test(t)) return true
+  // LI "More actions" truncated button labels (seen rendered as "Read Spec" when
+  // clipped) — never a real profile text block.
+  if (/^Read Spec/i.test(t)) return true
+  // Pronoun tags ("He/Him", "She/Her", "They/Them", sometimes with degree suffix).
+  if (/^(he\/him|she\/her|they\/them|he\/they|she\/they|ze\/zir)(\s*·.*)?$/i.test(t)) return true
   return false
 }
+
+// Content keywords that identify a block as an education/certification row
+// rather than a current-employer company row. Used by scrapeCompany to skip
+// MBAs, universities, schools, certifications that render in the same area
+// as the current-role company in the profile top card.
+const EDUCATION_KEYWORD_RE = /\b(MBA|Master(?:'s)?|PhD|University|Universidad|School of|Business School|Bootcamp|Course|Certificate|Certification|Diploma)\b/i
 
 function getTopCardTextBlocks(): TopCardBlock[] {
   const mainEl = document.querySelector('main')
@@ -269,16 +280,25 @@ function scrapeCompany(): string | null {
 
   const fIdx = findFollowersIndex(blocks)
   if (fIdx < 2) return null // need headline + company + location + followers
-  // Location at fIdx-1; company at fIdx-2 (if exists and distinct from headline).
-  const companyBlock = blocks[fIdx - 2]
-  if (!companyBlock) return null
-  const t = companyBlock.text
-  // Reject if it looks like a headline (long, multiple title words, "at X")
-  if (t.length > 100) return null
-  if (/\b(at|of)\b|Head |Director|Engineer|Manager|Founder|CEO|CTO|CFO/i.test(t)) return null
-  // Reject if it's the headline block itself (fIdx-2 === 0 when there's no company row)
-  if (fIdx - 2 === 0) return null
-  return t
+
+  // Walk from position 1 (right after the headline at 0) up to fIdx-2 and
+  // pick the FIRST block that looks like a current-employer company —
+  // skipping education rows (Jack's "Marketing Week Mini MBA..." case where
+  // a course/MBA is rendered between headline and location alongside the
+  // real current company "Granola").
+  //
+  // Previously we picked blocks[fIdx-2] unconditionally, which returned the
+  // LAST current-role block and often grabbed the education row.
+  for (let i = 1; i <= fIdx - 2; i++) {
+    const t = blocks[i].text
+    if (t.length > 100) continue
+    // Skip headline-style text
+    if (/\b(at|of)\b|Head |Director|Engineer|Manager|Founder|CEO|CTO|CFO/i.test(t)) continue
+    // Skip education/certification rows
+    if (EDUCATION_KEYWORD_RE.test(t)) continue
+    return t
+  }
+  return null
 }
 
 // Extract the LinkedIn company URL (and logo) for the current role. The
