@@ -1222,20 +1222,26 @@ async function enrichContactFromLinkedinProfile(
 // Deep-scrape a LI company page and update the matching companies row.
 // Runs async after enrich returns — the LI view briefly navigates to the
 // company About page, scrapes, then returns to where the user was.
+// Module-local reference registered by main.ts at startup so we don't
+// need a circular dynamic import into main.ts to reach the LI view.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let _linkedinWebContentsForScrape: any = null
+export function setLinkedinWebContentsForScrape(wc: unknown): void {
+  _linkedinWebContentsForScrape = wc
+}
+
 async function deepEnrichCompanyFromLinkedIn(
   companyName: string,
   companyLinkedinUrl: string,
 ): Promise<void> {
+  console.log('[contacts] deep-enrich START', { companyName, companyLinkedinUrl })
   try {
-    const [{ getLinkedinWebContents }, { scrapeLinkedInCompanyInView }] = await Promise.all([
-      import('../main'),
-      import('../scrape-company'),
-    ])
-    const wc = getLinkedinWebContents()
+    const wc = _linkedinWebContentsForScrape
     if (!wc) {
-      console.warn('[contacts] deep-enrich: LI view not ready')
+      console.warn('[contacts] deep-enrich: LI webContents not registered — is main.ts calling setLinkedinWebContentsForScrape?')
       return
     }
+    const { scrapeLinkedInCompanyInView } = await import('../scrape-company')
     const scrape = await scrapeLinkedInCompanyInView(wc, companyLinkedinUrl)
     if (!scrape) {
       console.warn('[contacts] deep-enrich: scrape returned null')

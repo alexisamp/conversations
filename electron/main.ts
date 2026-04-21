@@ -20,7 +20,7 @@ import {
 import * as path from 'path'
 import { loadEnvFile } from './supabase/env'
 import { registerAuthIpc } from './supabase/auth'
-import { registerContactIpc } from './supabase/contacts'
+import { registerContactIpc, setLinkedinWebContentsForScrape } from './supabase/contacts'
 import { applyLayout } from './layout'
 import { insertMessage, assignMessageToSession, type MessageInput } from './db/local'
 import { handleMessage, recoverOpenSessions } from './session-manager'
@@ -407,6 +407,9 @@ async function createMainWindow(): Promise<void> {
   })
   linkedinView.webContents.setUserAgent(CHROME_UA)
   attachDiagnosticListeners(linkedinView, 'li')
+  // Register this webContents so scrape-company.ts can navigate it to
+  // /company/<slug>/about/ and scrape company fields after a person enrich.
+  setLinkedinWebContentsForScrape(linkedinView.webContents)
 
   // Mirror the WhatsApp zoom (0.8) so LinkedIn also renders denser.
   linkedinView.webContents.on('did-finish-load', () => {
