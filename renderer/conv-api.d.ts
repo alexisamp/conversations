@@ -181,6 +181,40 @@ export type SidebarContext =
   | { tab: 'wa'; state: WaState }
   | { tab: 'li'; state: LiState }
 
+export type SyncState =
+  | 'idle'
+  | 'scanning'
+  | 'up_to_date'
+  | 'needs_identity_resolution'
+  | 'failed'
+
+export type SyncStatus = {
+  state: SyncState
+  label: string
+  detail: string
+  activeJob: string | null
+  lastRunAt: number | null
+  uploadedCount: number
+  unmatchedCount: number
+  issueCount: number
+  error?: string
+}
+
+export type SyncIssue = {
+  id: number
+  issue_key: string
+  kind: 'identity_resolution' | 'history_import' | 'sync_error'
+  severity: 'info' | 'warning' | 'error'
+  title: string
+  detail: string | null
+  chat_key: string | null
+  contact_id: string | null
+  status: 'open' | 'resolved' | 'dismissed'
+  created_at: number
+  updated_at: number
+  resolved_at: number | null
+}
+
 export type ConvApi = {
   auth: {
     status(): Promise<AuthStatus>
@@ -208,6 +242,22 @@ export type ConvApi = {
   sidebar: {
     onContext(cb: (ctx: SidebarContext) => void): void
     toggle(): Promise<void>
+  }
+  sync: {
+    getStatus(): Promise<SyncStatus>
+    listIssues(): Promise<SyncIssue[]>
+    runActiveChat(): Promise<{
+      chatsScanned: number
+      uploadedCount: number
+      unmatchedCount: number
+    }>
+    runRecentCatchUp(limit?: number): Promise<{
+      chatsScanned: number
+      uploadedCount: number
+      unmatchedCount: number
+    }>
+    dismissIssue(issueKey: string): Promise<void>
+    onStatus(cb: (status: SyncStatus) => void): () => void
   }
   wa: {
     navigateToDm(phone: string): Promise<{ ok: boolean; error?: string }>

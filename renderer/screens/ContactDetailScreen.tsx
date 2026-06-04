@@ -109,8 +109,9 @@ export function ContactDetailScreen({ contact, onRefresh }: Props) {
       )}
 
       {/* ── Chips ── */}
-      {(contact.linkedin_url || contact.referred_by || contact.status) && (
+      {(contact.birthday || contact.linkedin_url || contact.referred_by || contact.status) && (
         <div className="chip-row">
+          {contact.birthday && <span className="chip">Birthday {contact.birthday}</span>}
           {contact.linkedin_url && (
             <a
               className="chip chip-link"
@@ -125,6 +126,45 @@ export function ContactDetailScreen({ contact, onRefresh }: Props) {
           {contact.status && <span className="chip">{contact.status}</span>}
         </div>
       )}
+
+      {/* ── Value given ── */}
+      <div className="section">
+        <div className="section-header">
+          <span className="section-title">Value Given</span>
+          {!valueOpen && (
+            <button className="section-action" onClick={() => setValueOpen(true)}>
+              + Add
+            </button>
+          )}
+        </div>
+
+        {valueOpen && (
+          <AddValueLogForm
+            contactId={contact.id}
+            onCancel={() => setValueOpen(false)}
+            onSaved={() => {
+              setValueOpen(false)
+              onRefresh()
+            }}
+          />
+        )}
+
+        {contact.value_logs.length === 0 ? (
+          <div className="empty small">No value logs yet.</div>
+        ) : (
+          <ul className="value-list">
+            {contact.value_logs.map((v) => (
+              <li key={v.id} className="value-item">
+                <span className="value-badge">
+                  {VALUE_TYPE_LABELS[v.type] ?? v.type}
+                </span>
+                <span className="value-desc">{v.description || '—'}</span>
+                <span className="value-date">{v.date}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
 
       {/* ── Recent activity ── */}
       <div className="section">
@@ -178,45 +218,6 @@ export function ContactDetailScreen({ contact, onRefresh }: Props) {
                     </div>
                   )}
                 </div>
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
-
-      {/* ── Value given ── */}
-      <div className="section">
-        <div className="section-header">
-          <span className="section-title">Value Given</span>
-          {!valueOpen && (
-            <button className="section-action" onClick={() => setValueOpen(true)}>
-              + Add
-            </button>
-          )}
-        </div>
-
-        {valueOpen && (
-          <AddValueLogForm
-            contactId={contact.id}
-            onCancel={() => setValueOpen(false)}
-            onSaved={() => {
-              setValueOpen(false)
-              onRefresh()
-            }}
-          />
-        )}
-
-        {contact.value_logs.length === 0 ? (
-          <div className="empty small">No value logs yet.</div>
-        ) : (
-          <ul className="value-list">
-            {contact.value_logs.map((v) => (
-              <li key={v.id} className="value-item">
-                <span className="value-badge">
-                  {VALUE_TYPE_LABELS[v.type] ?? v.type}
-                </span>
-                <span className="value-desc">{v.description || '—'}</span>
-                <span className="value-date">{v.date}</span>
               </li>
             ))}
           </ul>

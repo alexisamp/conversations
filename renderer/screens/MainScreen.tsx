@@ -4,7 +4,7 @@ import { GroupScreen } from './GroupScreen'
 import { LinkedinProfileScreen } from './LinkedinProfileScreen'
 import { MapParticipantModal } from './MapParticipantModal'
 import { SettingsScreen } from './SettingsScreen'
-import type { ContactDetail, GroupParticipant, SidebarContext } from '../conv-api'
+import type { ContactDetail, GroupParticipant, SidebarContext, SyncIssue, SyncStatus } from '../conv-api'
 
 type PersonLookupState =
   | { kind: 'idle' }
@@ -19,6 +19,19 @@ export function MainScreen({ email }: { email: string }) {
     tab: 'wa',
     state: { kind: 'none' },
   })
+  const [syncStatus, setSyncStatus] = useState<SyncStatus>({
+    state: 'idle',
+    label: 'Not scanned yet',
+    detail: 'Open WhatsApp or run catch-up',
+    activeJob: null,
+    lastRunAt: null,
+    uploadedCount: 0,
+    unmatchedCount: 0,
+    issueCount: 0,
+  })
+  const [syncIssues, setSyncIssues] = useState<SyncIssue[]>([])
+  const [syncDrawerOpen, setSyncDrawerOpen] = useState(false)
+  const [syncBusy, setSyncBusy] = useState(false)
   const [personLookup, setPersonLookup] = useState<PersonLookupState>({ kind: 'idle' })
   const [view, setView] = useState<'main' | 'settings'>('main')
   const lastHitPhoneRef = useRef<string | null>(null)
@@ -62,6 +75,51 @@ export function MainScreen({ email }: { email: string }) {
       }
     })
   }, [runPersonLookup])
+
+  const refreshSync = useCallback(async () => {
+    const [status, issues] = await Promise.all([
+      window.conv.sync.getStatus(),
+      window.conv.sync.listIssues(),
+    ])
+    setSyncStatus(status)
+    setSyncIssues(issues)
+  }, [])
+
+  useEffect(() => {
+    void refreshSync()
+    const unsubscribe = window.conv.sync.onStatus((status) => {
+      setSyncStatus(status)
+      void window.conv.sync.listIssues().then(setSyncIssues)
+    })
+    return unsubscribe
+  }, [refreshSync])
+
+  async function runCatchUp() {
+    setSyncBusy(true)
+    try {
+      await window.conv.sync.runRecentCatchUp()
+      await refreshSync()
+      if (lastHitPhoneRef.current) await handleRefresh()
+    } finally {
+      setSyncBusy(false)
+    }
+  }
+
+  async function runActiveSync() {
+    setSyncBusy(true)
+    try {
+      await window.conv.sync.runActiveChat()
+      await refreshSync()
+      if (lastHitPhoneRef.current) await handleRefresh()
+    } finally {
+      setSyncBusy(false)
+    }
+  }
+
+  async function dismissSyncIssue(issueKey: string) {
+    await window.conv.sync.dismissIssue(issueKey)
+    await refreshSync()
+  }
 
   async function handleManualSubmit(event: React.FormEvent) {
     event.preventDefault()
@@ -109,6 +167,13 @@ export function MainScreen({ email }: { email: string }) {
         </div>
       </header>
 
+      <SyncStatusBar
+        status={syncStatus}
+        busy={syncBusy}
+        onOpen={() => setSyncDrawerOpen(true)}
+        onRunActive={runActiveSync}
+      />
+
       <details className="dev-lookup-collapsible">
         <summary>Manual lookup (dev)</summary>
         <form onSubmit={handleManualSubmit}>
@@ -134,8 +199,184 @@ export function MainScreen({ email }: { email: string }) {
           onRefreshPerson={handleRefresh}
         />
       </div>
+      {syncDrawerOpen && (
+        <SyncDrawer
+          status={syncStatus}
+          issues={syncIssues}
+          busy={syncBusy}
+          onClose={() => setSyncDrawerOpen(false)}
+          onRunCatchUp={runCatchUp}
+          onRunActive={runActiveSync}
+          onDismissIssue={dismissSyncIssue}
+        />
+      )}
     </div>
   )
+}
+
+function SyncStatusBar({
+  status,
+  busy,
+  onOpen,
+  onRunActive,
+}: {
+  status: SyncStatus
+  busy: boolean
+  onOpen: () => void
+  onRunActive: () => void
+}) {
+  const className = `sync-status sync-${status.state}`
+  return (
+    <div className={className}>
+      <button className="sync-status-main" onClick={onOpen}>
+        <span className="sync-dot" />
+        <span className="sync-copy">
+          <strong>{status.label}</strong>
+          <span>{status.detail}</span>
+        </span>
+      </button>
+      <button
+        className="sync-mini-action"
+        onClick={onRunActive}
+        disabled={busy || status.state === 'scanning'}
+      >
+        {busy || status.state === 'scanning' ? 'Running' : 'Sync chat'}
+      </button>
+    </div>
+  )
+}
+
+function SyncDrawer({
+  status,
+  issues,
+  busy,
+  onClose,
+  onRunCatchUp,
+  onRunActive,
+  onDismissIssue,
+}: {
+  status: SyncStatus
+  issues: SyncIssue[]
+  busy: boolean
+  onClose: () => void
+  onRunCatchUp: () => void
+  onRunActive: () => void
+  onDismissIssue: (issueKey: string) => void
+}) {
+  const identityIssues = issues.filter((issue) => issue.kind === 'identity_resolution')
+  const errorIssues = issues.filter((issue) => issue.kind === 'sync_error')
+  const historyIssues = issues.filter((issue) => issue.kind === 'history_import')
+
+  return (
+    <div className="sync-drawer-backdrop" onClick={onClose}>
+      <aside className="sync-drawer" onClick={(event) => event.stopPropagation()}>
+        <div className="sync-drawer-header">
+          <div>
+            <div className="sync-drawer-eyebrow">Sync health</div>
+            <h2>{status.label}</h2>
+            <p>{status.detail}</p>
+          </div>
+          <button className="icon-button" onClick={onClose} aria-label="Close sync drawer">
+            ×
+          </button>
+        </div>
+
+        <div className="sync-metrics">
+          <div>
+            <strong>{status.uploadedCount}</strong>
+            <span>uploaded</span>
+          </div>
+          <div>
+            <strong>{identityIssues.length}</strong>
+            <span>need match</span>
+          </div>
+          <div>
+            <strong>{status.lastRunAt ? formatSyncAgo(status.lastRunAt) : 'never'}</strong>
+            <span>last run</span>
+          </div>
+        </div>
+
+        <div className="sync-actions">
+          <button className="primary" disabled={busy || status.state === 'scanning'} onClick={onRunCatchUp}>
+            {busy || status.state === 'scanning' ? 'Catching up...' : 'Catch up recent chats'}
+          </button>
+          <button className="ghost" disabled={busy || status.state === 'scanning'} onClick={onRunActive}>
+            Sync active chat
+          </button>
+        </div>
+
+        <SyncIssueGroup
+          title="Identity resolution"
+          empty="No unmatched conversations."
+          issues={identityIssues}
+          actionLabel="Resolve in reThink Review"
+          onDismissIssue={onDismissIssue}
+        />
+        <SyncIssueGroup
+          title="Sync errors"
+          empty="No sync errors."
+          issues={errorIssues}
+          actionLabel="Retry catch-up"
+          onDismissIssue={onDismissIssue}
+        />
+        <SyncIssueGroup
+          title="History imports"
+          empty="No deep imports needed."
+          issues={historyIssues}
+          actionLabel="Import manually"
+          onDismissIssue={onDismissIssue}
+        />
+      </aside>
+    </div>
+  )
+}
+
+function SyncIssueGroup({
+  title,
+  empty,
+  issues,
+  actionLabel,
+  onDismissIssue,
+}: {
+  title: string
+  empty: string
+  issues: SyncIssue[]
+  actionLabel: string
+  onDismissIssue: (issueKey: string) => void
+}) {
+  return (
+    <section className="sync-issue-group">
+      <div className="sync-issue-title">
+        <span>{title}</span>
+        <strong>{issues.length}</strong>
+      </div>
+      {issues.length === 0 ? (
+        <div className="sync-empty">{empty}</div>
+      ) : (
+        <ul className="sync-issue-list">
+          {issues.map((issue) => (
+            <li key={issue.issue_key} className={`sync-issue sync-issue-${issue.severity}`}>
+              <div>
+                <strong>{issue.title}</strong>
+                {issue.detail && <p>{issue.detail}</p>}
+                <span>{actionLabel}</span>
+              </div>
+              <button onClick={() => onDismissIssue(issue.issue_key)}>Dismiss</button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  )
+}
+
+function formatSyncAgo(timestamp: number) {
+  const minutes = Math.max(0, Math.round((Date.now() - timestamp) / 60000))
+  if (minutes < 1) return 'now'
+  if (minutes < 60) return `${minutes}m`
+  const hours = Math.round(minutes / 60)
+  if (hours < 24) return `${hours}h`
+  return `${Math.round(hours / 24)}d`
 }
 
 // ─── Body router ──────────────────────────────────────────────────────

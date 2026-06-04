@@ -177,6 +177,40 @@ export type SidebarContext =
   | { tab: 'wa'; state: WaState }
   | { tab: 'li'; state: LiState }
 
+export type SyncState =
+  | 'idle'
+  | 'scanning'
+  | 'up_to_date'
+  | 'needs_identity_resolution'
+  | 'failed'
+
+export type SyncStatus = {
+  state: SyncState
+  label: string
+  detail: string
+  activeJob: string | null
+  lastRunAt: number | null
+  uploadedCount: number
+  unmatchedCount: number
+  issueCount: number
+  error?: string
+}
+
+export type SyncIssue = {
+  id: number
+  issue_key: string
+  kind: 'identity_resolution' | 'history_import' | 'sync_error'
+  severity: 'info' | 'warning' | 'error'
+  title: string
+  detail: string | null
+  chat_key: string | null
+  contact_id: string | null
+  status: 'open' | 'resolved' | 'dismissed'
+  created_at: number
+  updated_at: number
+  resolved_at: number | null
+}
+
 const api = {
   auth: {
     status: (): Promise<AuthStatus> => ipcRenderer.invoke('auth:status'),
@@ -223,6 +257,27 @@ const api = {
       )
     },
     toggle: (): Promise<void> => ipcRenderer.invoke('sidebar:toggle'),
+  },
+  sync: {
+    getStatus: (): Promise<SyncStatus> => ipcRenderer.invoke('sync:get-status'),
+    listIssues: (): Promise<SyncIssue[]> => ipcRenderer.invoke('sync:list-issues'),
+    runActiveChat: (): Promise<{
+      chatsScanned: number
+      uploadedCount: number
+      unmatchedCount: number
+    }> => ipcRenderer.invoke('sync:run-active-chat'),
+    runRecentCatchUp: (limit?: number): Promise<{
+      chatsScanned: number
+      uploadedCount: number
+      unmatchedCount: number
+    }> => ipcRenderer.invoke('sync:run-recent-catchup', limit),
+    dismissIssue: (issueKey: string): Promise<void> =>
+      ipcRenderer.invoke('sync:dismiss-issue', issueKey),
+    onStatus: (cb: (status: SyncStatus) => void): (() => void) => {
+      const listener = (_: unknown, status: SyncStatus) => cb(status)
+      ipcRenderer.on('sync:status', listener)
+      return () => ipcRenderer.off('sync:status', listener)
+    },
   },
   wa: {
     navigateToDm: (phone: string): Promise<{ ok: boolean; error?: string }> =>

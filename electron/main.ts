@@ -25,6 +25,7 @@ import { applyLayout } from './layout'
 import { insertMessage, assignMessageToSession, type MessageInput } from './db/local'
 import { handleMessage, recoverOpenSessions } from './session-manager'
 import { startSync, stopSync } from './sync/supabase-sync'
+import { createSyncCoordinator, type SyncStatus } from './sync/sync-coordinator'
 import { autoUpdater } from 'electron-updater'
 
 // Cache phone → contactId so we don't re-resolve on every message.
@@ -60,6 +61,7 @@ export function getLinkedinWebContents(): Electron.WebContents | null {
 }
 let sidebarView: WebContentsView | null = null
 let searchOverlayView: WebContentsView | null = null
+let syncCoordinator: ReturnType<typeof createSyncCoordinator> | null = null
 let sidebarVisible = true
 let activeTab: Tab = 'wa'
 let overlayVisible = false
@@ -393,6 +395,8 @@ async function createMainWindow(): Promise<void> {
   whatsappView.webContents.on('did-finish-load', () => {
     whatsappView?.webContents.setZoomFactor(0.8)
     injectBannerHider(whatsappView!)
+    syncCoordinator?.scheduleActiveChat('whatsapp load')
+    syncCoordinator?.scheduleStartupCatchUp()
   })
 
   // ── LinkedIn view ──
@@ -465,6 +469,23 @@ async function createMainWindow(): Promise<void> {
   searchOverlayView.setVisible(false)
   searchOverlayView.setBounds({ x: 0, y: 0, width: 0, height: 0 })
 
+  syncCoordinator = createSyncCoordinator({
+    getWhatsAppWebContents: () => whatsappView?.webContents ?? null,
+    getCurrentWaContext: () => waContext,
+    scanVisibleHistory: async () => {
+      if (!whatsappView) return []
+      return (await whatsappView.webContents.executeJavaScript(
+        BACKFILL_SCAN_SCRIPT,
+        true,
+      )) as HistoricalEntry[]
+    },
+    importBackfillWindows,
+    resolveContactByPhone: resolveContactIdByPhoneStrict,
+    publishStatus: (status: SyncStatus) => {
+      sidebarView?.webContents.send('sync:status', status)
+    },
+  })
+
   // Z-order: first added = back. Tab bar + overlay are topmost.
   mainWindow.contentView.addChildView(whatsappView)
   mainWindow.contentView.addChildView(linkedinView)
@@ -499,6 +520,7 @@ async function createMainWindow(): Promise<void> {
     linkedinView = null
     sidebarView = null
     searchOverlayView = null
+    syncCoordinator = null
   })
 }
 
@@ -574,6 +596,38 @@ function handleExternalLink(url: string): void {
   if (url.startsWith('https://') || url.startsWith('http://')) {
     shell.openExternal(url).catch(() => {})
   }
+}
+
+async function resolveContactIdByPhoneStrict(phone: string): Promise<string | null> {
+  const { getSupabase } = await import('./supabase/client')
+  const { phoneVariants } = await import('./utils/phone')
+  const supabase = getSupabase()
+  const variants = phoneVariants(phone)
+
+  const { data: channel } = await supabase
+    .from('contact_channels')
+    .select('outreach_log_id')
+    .eq('channel', 'whatsapp')
+    .in('channel_identifier', variants)
+    .limit(1)
+    .maybeSingle()
+  if (channel) return channel.outreach_log_id as string
+
+  const { data: mapping } = await supabase
+    .from('contact_phone_mappings')
+    .select('contact_id')
+    .in('phone_number', variants)
+    .limit(1)
+    .maybeSingle()
+  if (mapping) return mapping.contact_id as string
+
+  const { data: contact } = await supabase
+    .from('outreach_logs')
+    .select('id')
+    .in('phone', variants)
+    .limit(1)
+    .maybeSingle()
+  return contact ? (contact.id as string) : null
 }
 
 function attachDiagnosticListeners(view: WebContentsView, label: 'wa' | 'li'): void {
@@ -1409,6 +1463,28 @@ function wireUpdaterEvents(): void {
 
 function registerIpc(): void {
   ipcMain.handle('sidebar:toggle', () => toggleSidebar())
+  ipcMain.handle('sync:get-status', () => syncCoordinator?.getStatus() ?? {
+    state: 'idle',
+    label: 'Not ready',
+    detail: 'Sync coordinator is starting',
+    activeJob: null,
+    lastRunAt: null,
+    uploadedCount: 0,
+    unmatchedCount: 0,
+    issueCount: 0,
+  })
+  ipcMain.handle('sync:list-issues', () => syncCoordinator?.listIssues() ?? [])
+  ipcMain.handle('sync:run-active-chat', async () => {
+    if (!syncCoordinator) throw new Error('Sync coordinator not ready')
+    return syncCoordinator.runActiveChat('manual active chat scan')
+  })
+  ipcMain.handle('sync:run-recent-catchup', async (_event, limit?: number) => {
+    if (!syncCoordinator) throw new Error('Sync coordinator not ready')
+    return syncCoordinator.runRecentCatchUp(limit)
+  })
+  ipcMain.handle('sync:dismiss-issue', (_event, issueKey: string) => {
+    syncCoordinator?.dismissIssue(issueKey)
+  })
 
   // Updater IPCs — explicit 3-step flow:
   //   check → (if available) download → (when downloaded) restart-install
@@ -1546,6 +1622,7 @@ function registerIpc(): void {
     if (activeTab === 'wa') {
       sidebarView?.webContents.send('sidebar:context', { tab: 'wa', state: payload })
     }
+    syncCoordinator?.scheduleActiveChat('chat changed')
   })
 
   // WhatsApp preload → per-message capture + session management.

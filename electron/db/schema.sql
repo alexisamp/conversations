@@ -63,3 +63,47 @@ CREATE TABLE IF NOT EXISTS meta (
   key    TEXT PRIMARY KEY,
   value  TEXT NOT NULL
 );
+
+-- Sync observability. These tables are intentionally local-only: they let the
+-- sidebar explain whether Conversations is caught up without blocking the UI.
+CREATE TABLE IF NOT EXISTS sync_runs (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  reason          TEXT NOT NULL,
+  status          TEXT NOT NULL CHECK (status IN ('running','succeeded','failed','cancelled')),
+  started_at      INTEGER NOT NULL,
+  finished_at     INTEGER,
+  chats_scanned   INTEGER NOT NULL DEFAULT 0,
+  uploaded_count  INTEGER NOT NULL DEFAULT 0,
+  unmatched_count INTEGER NOT NULL DEFAULT 0,
+  error           TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_sync_runs_started ON sync_runs(started_at DESC);
+
+CREATE TABLE IF NOT EXISTS chat_sync_state (
+  chat_key        TEXT PRIMARY KEY,
+  wa_name         TEXT,
+  phone           TEXT,
+  contact_id      TEXT,
+  status          TEXT NOT NULL CHECK (status IN ('up_to_date','needs_identity_resolution','failed','skipped')),
+  last_scanned_at INTEGER NOT NULL,
+  entries_seen    INTEGER NOT NULL DEFAULT 0,
+  windows_written INTEGER NOT NULL DEFAULT 0,
+  error           TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_chat_sync_state_status ON chat_sync_state(status, last_scanned_at DESC);
+
+CREATE TABLE IF NOT EXISTS sync_issues (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  issue_key     TEXT NOT NULL UNIQUE,
+  kind          TEXT NOT NULL CHECK (kind IN ('identity_resolution','history_import','sync_error')),
+  severity      TEXT NOT NULL CHECK (severity IN ('info','warning','error')),
+  title         TEXT NOT NULL,
+  detail        TEXT,
+  chat_key      TEXT,
+  contact_id    TEXT,
+  status        TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','resolved','dismissed')),
+  created_at    INTEGER NOT NULL DEFAULT (unixepoch() * 1000),
+  updated_at    INTEGER NOT NULL DEFAULT (unixepoch() * 1000),
+  resolved_at   INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_sync_issues_open ON sync_issues(status, kind, updated_at DESC);
