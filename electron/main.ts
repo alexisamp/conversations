@@ -28,6 +28,9 @@ import { startSync, stopSync } from './sync/supabase-sync'
 import { createSyncCoordinator, type SyncStatus } from './sync/sync-coordinator'
 import { WhatsappBridge } from './whatsapp/bridge'
 import { DailyInsightRunner, nextInsightRunAt } from './ai/daily-insights'
+import { getSupabase } from './supabase/client'
+import { summarizeSession } from './ai/gemini'
+import { phoneVariants } from './utils/phone'
 import { autoUpdater } from 'electron-updater'
 
 // Cache phone → contactId so we don't re-resolve on every message.
@@ -669,8 +672,6 @@ function handleExternalLink(url: string): void {
 }
 
 async function resolveContactIdByPhoneStrict(phone: string): Promise<string | null> {
-  const { getSupabase } = await import('./supabase/client')
-  const { phoneVariants } = await import('./utils/phone')
   const supabase = getSupabase()
   const variants = phoneVariants(phone)
 
@@ -705,8 +706,6 @@ async function resolveBridgeChatContact(input: {
   phone: string | null
   waName: string | null
 }): Promise<string | null> {
-  const { getSupabase } = await import('./supabase/client')
-  const { phoneVariants } = await import('./utils/phone')
   const supabase = getSupabase()
   const identifiers = new Set<string>([`jid:${input.chatId}`, input.chatId])
   if (input.waName?.trim()) identifiers.add(`waname:${input.waName.trim()}`)
@@ -733,7 +732,6 @@ async function linkBridgeChatToContact(input: {
   phone: string | null
 }): Promise<{ ok: true } | { ok: false; error: string }> {
   try {
-    const { getSupabase } = await import('./supabase/client')
     const supabase = getSupabase()
     const identifier = input.phone || `jid:${input.chat_id}`
     const { error } = await supabase.from('contact_channels').insert({
@@ -1432,8 +1430,6 @@ function buildConversationText(win: BackfillWindow): string | null {
 async function importBackfillWindows(
   input: BackfillImportInput,
 ): Promise<BackfillImportResult> {
-  const { getSupabase } = await import('./supabase/client')
-  const { summarizeSession } = await import('./ai/gemini')
   const client = getSupabase()
 
   const {
@@ -1792,8 +1788,6 @@ function registerIpc(): void {
         if (contactId === undefined) {
           // First message for this phone in this app session → resolve async.
           try {
-            const { getSupabase } = await import('./supabase/client')
-            const { phoneVariants } = await import('./utils/phone')
             const supabase = getSupabase()
             const variants = phoneVariants(payload.chat_phone)
 

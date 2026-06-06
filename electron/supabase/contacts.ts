@@ -6,6 +6,8 @@ import { ipcMain } from 'electron'
 import { getSupabase } from './client'
 import { phoneVariants } from '../utils/phone'
 import { linkedinSlug, linkedinUrlVariants } from '../utils/linkedin'
+import { uploadCompanyLogo, uploadLinkedInPhoto } from './photo-upload'
+import { scrapeLinkedInCompanyInView } from '../scrape-company'
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -1003,7 +1005,6 @@ async function createContactFromLinkedinProfile(input: {
   // Mirror LI photo to Supabase Storage (media.licdn.com URLs expire).
   let photoUrlToStore: string | null = input.photoUrl
   if (input.photoUrl) {
-    const { uploadLinkedInPhoto } = await import('./photo-upload')
     const permanent = await uploadLinkedInPhoto(input.photoUrl, input.url)
     photoUrlToStore = permanent ?? input.photoUrl
   }
@@ -1043,7 +1044,6 @@ async function createContactFromLinkedinProfile(input: {
   if (company) {
     let permanentLogoUrl: string | null = null
     if (input.companyLogoUrl) {
-      const { uploadCompanyLogo } = await import('./photo-upload')
       permanentLogoUrl = await uploadCompanyLogo(input.companyLogoUrl, company)
     }
     const { error: rpcErr } = await supabase.rpc('upsert_company_and_link', {
@@ -1132,7 +1132,6 @@ async function enrichContactFromLinkedinProfile(
     // Falls back to the raw URL if upload fails (degrades gracefully — photo
     // still renders until the CDN URL expires).
     if (effectiveLinkedinUrl) {
-      const { uploadLinkedInPhoto } = await import('./photo-upload')
       const permanent = await uploadLinkedInPhoto(input.photoUrl, effectiveLinkedinUrl)
       updates.profile_photo_url = permanent ?? input.photoUrl
     } else {
@@ -1191,7 +1190,6 @@ async function enrichContactFromLinkedinProfile(
   if (finalCompany) {
     let permanentLogoUrl: string | null = null
     if (input.companyLogoUrl) {
-      const { uploadCompanyLogo } = await import('./photo-upload')
       permanentLogoUrl = await uploadCompanyLogo(input.companyLogoUrl, finalCompany)
     }
     const { error: rpcErr } = await supabase.rpc('upsert_company_and_link', {
@@ -1241,7 +1239,6 @@ async function deepEnrichCompanyFromLinkedIn(
       console.warn('[contacts] deep-enrich: LI webContents not registered — is main.ts calling setLinkedinWebContentsForScrape?')
       return
     }
-    const { scrapeLinkedInCompanyInView } = await import('../scrape-company')
     const scrape = await scrapeLinkedInCompanyInView(wc, companyLinkedinUrl)
     if (!scrape) {
       console.warn('[contacts] deep-enrich: scrape returned null')
@@ -1251,7 +1248,6 @@ async function deepEnrichCompanyFromLinkedIn(
     // Upload logo to Supabase Storage (media.licdn.com URLs expire)
     let permanentLogoUrl: string | null = null
     if (scrape.logoUrl) {
-      const { uploadCompanyLogo } = await import('./photo-upload')
       permanentLogoUrl = await uploadCompanyLogo(scrape.logoUrl, companyName)
     }
 
