@@ -28,6 +28,27 @@ export type MessageRow = MessageInput & {
   created_at: number
 }
 
+export type BridgeMessageInput = {
+  wa_message_id: string
+  chat_id: string
+  chat_kind: 'person' | 'group'
+  chat_name: string | null
+  sender: string | null
+  sender_phone: string | null
+  direction: 'inbound' | 'outbound'
+  text: string | null
+  media_type: string | null
+  timestamp_ms: number
+}
+
+export type BridgeMessageRow = BridgeMessageInput & {
+  id: number
+  captured_at: number
+  ai_processed_at: number | null
+  synced_at: number | null
+  contact_id: string | null
+}
+
 export type SessionRow = {
   id: number
   chat_phone: string
@@ -80,9 +101,21 @@ export function getDb(): Database.Database {
   handle.pragma('synchronous = NORMAL')
   handle.pragma('foreign_keys = ON')
   handle.exec(loadSchema())
+  migrateLocalSchema(handle)
   db = handle
   console.log('[localdb] opened', file)
   return db
+}
+
+function hasColumn(handle: Database.Database, table: string, column: string): boolean {
+  const rows = handle.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>
+  return rows.some((row) => row.name === column)
+}
+
+function migrateLocalSchema(handle: Database.Database): void {
+  if (!hasColumn(handle, 'bridge_messages', 'contact_id')) {
+    handle.prepare('ALTER TABLE bridge_messages ADD COLUMN contact_id TEXT').run()
+  }
 }
 
 // ─── Messages ────────────────────────────────────────────────────────
@@ -114,6 +147,190 @@ export function countMessages(): number {
   const d = getDb()
   const row = d.prepare('SELECT COUNT(*) AS c FROM messages').get() as { c: number }
   return row.c
+}
+
+// ─── Bridge messages ─────────────────────────────────────────────────
+
+export function upsertBridgeMessages(inputs: BridgeMessageInput[]): number {
+  if (inputs.length === 0) return 0
+  const d = getDb()
+  const stmt = d.prepare(`
+    INSERT INTO bridge_messages
+      (wa_message_id, chat_id, chat_kind, chat_name, sender, sender_phone, direction, text, media_type, timestamp_ms)
+    VALUES
+      (@wa_message_id, @chat_id, @chat_kind, @chat_name, @sender, @sender_phone, @direction, @text, @media_type, @timestamp_ms)
+    ON CONFLICT(chat_id, wa_message_id) DO UPDATE SET
+      chat_name = excluded.chat_name,
+      sender = excluded.sender,
+      sender_phone = excluded.sender_phone,
+      text = excluded.text,
+      media_type = excluded.media_type,
+      timestamp_ms = excluded.timestamp_ms
+  `)
+  const tx = d.transaction((rows: BridgeMessageInput[]) => {
+    let changed = 0
+    for (const row of rows) {
+      const result = stmt.run(row)
+      changed += result.changes
+    }
+    return changed
+  })
+  return tx(inputs) as number
+}
+
+export function latestBridgeMessageAt(): number | null {
+  const row = getDb()
+    .prepare('SELECT MAX(timestamp_ms) AS latest FROM bridge_messages')
+    .get() as { latest: number | null }
+  return row.latest ?? null
+}
+
+export function bridgeMessagesForRange(startMs: number, endMs: number): BridgeMessageRow[] {
+  return getDb()
+    .prepare(`
+      SELECT * FROM bridge_messages
+      WHERE chat_kind = 'person'
+        AND timestamp_ms >= ?
+        AND timestamp_ms <= ?
+        AND synced_at IS NULL
+      ORDER BY chat_id ASC, timestamp_ms ASC
+    `)
+    .all(startMs, endMs) as BridgeMessageRow[]
+}
+
+export function bridgeMessagesForChat(chatId: string): BridgeMessageRow[] {
+  return getDb()
+    .prepare(`
+      SELECT * FROM bridge_messages
+      WHERE chat_id = ? AND chat_kind = 'person' AND synced_at IS NULL
+      ORDER BY timestamp_ms ASC
+    `)
+    .all(chatId) as BridgeMessageRow[]
+}
+
+export function markBridgeMessagesSynced(ids: number[], contactId: string): void {
+  if (ids.length === 0) return
+  const placeholders = ids.map(() => '?').join(',')
+  const now = Date.now()
+  getDb()
+    .prepare(`
+      UPDATE bridge_messages
+      SET synced_at = ?, ai_processed_at = COALESCE(ai_processed_at, ?), contact_id = ?
+      WHERE id IN (${placeholders})
+    `)
+    .run(now, now, contactId, ...ids)
+}
+
+export function latestBridgeMessageSummary(): { timestamp_ms: number | null; count_today: number } {
+  const d = getDb()
+  const latest = d
+    .prepare('SELECT MAX(timestamp_ms) AS latest FROM bridge_messages')
+    .get() as { latest: number | null }
+  const start = new Date()
+  start.setHours(0, 0, 0, 0)
+  const today = d
+    .prepare('SELECT COUNT(*) AS c FROM bridge_messages WHERE timestamp_ms >= ?')
+    .get(start.getTime()) as { c: number }
+  return { timestamp_ms: latest.latest ?? null, count_today: today.c }
+}
+
+export function pruneSyncedBridgeMessages(retentionDays = 30): number {
+  const cutoff = Date.now() - retentionDays * 24 * 60 * 60 * 1000
+  const result = getDb()
+    .prepare('DELETE FROM bridge_messages WHERE synced_at IS NOT NULL AND timestamp_ms < ?')
+    .run(cutoff)
+  return result.changes
+}
+
+// ─── Daily AI runs + output dedupe ───────────────────────────────────
+
+export type DailyAiRunRow = {
+  id: number
+  run_at: number
+  scheduled_for: string
+  date_covered: string
+  status: 'running' | 'succeeded' | 'failed'
+  messages_seen: number
+  conversations_processed: number
+  outputs_written: number
+  error: string | null
+  created_at: number
+  finished_at: number | null
+}
+
+export function createDailyAiRun(input: {
+  scheduled_for: string
+  date_covered: string
+}): number {
+  return Number(
+    getDb()
+      .prepare(`
+        INSERT INTO daily_ai_runs (run_at, scheduled_for, date_covered, status)
+        VALUES (?, ?, ?, 'running')
+      `)
+      .run(Date.now(), input.scheduled_for, input.date_covered).lastInsertRowid,
+  )
+}
+
+export function finishDailyAiRun(
+  runId: number,
+  input: {
+    status: 'succeeded' | 'failed'
+    messages_seen: number
+    conversations_processed: number
+    outputs_written: number
+    error?: string | null
+  },
+): void {
+  getDb()
+    .prepare(`
+      UPDATE daily_ai_runs
+      SET status = ?, messages_seen = ?, conversations_processed = ?, outputs_written = ?,
+          error = ?, finished_at = ?
+      WHERE id = ?
+    `)
+    .run(
+      input.status,
+      input.messages_seen,
+      input.conversations_processed,
+      input.outputs_written,
+      input.error ?? null,
+      Date.now(),
+      runId,
+    )
+}
+
+export function latestDailyAiRuns(limit = 5): DailyAiRunRow[] {
+  return getDb()
+    .prepare('SELECT * FROM daily_ai_runs ORDER BY created_at DESC LIMIT ?')
+    .all(limit) as DailyAiRunRow[]
+}
+
+export function lastSuccessfulDailyAiRunAt(): number | null {
+  const row = getDb()
+    .prepare(`
+      SELECT MAX(finished_at) AS finished_at
+      FROM daily_ai_runs
+      WHERE status = 'succeeded'
+    `)
+    .get() as { finished_at: number | null }
+  return row.finished_at ?? null
+}
+
+export function hasAiOutput(sourceKey: string): boolean {
+  const row = getDb()
+    .prepare('SELECT source_key FROM ai_output_dedupe WHERE source_key = ?')
+    .get(sourceKey)
+  return Boolean(row)
+}
+
+export function recordAiOutput(sourceKey: string, target: string, supabaseId?: string | null): void {
+  getDb()
+    .prepare(`
+      INSERT OR IGNORE INTO ai_output_dedupe (source_key, target, supabase_id)
+      VALUES (?, ?, ?)
+    `)
+    .run(sourceKey, target, supabaseId ?? null)
 }
 
 // ─── Sessions ────────────────────────────────────────────────────────

@@ -182,7 +182,35 @@ export type SyncState =
   | 'scanning'
   | 'up_to_date'
   | 'needs_identity_resolution'
+  | 'insight_pending'
   | 'failed'
+
+export type WhatsappBridgeStatus = {
+  state: 'not_installed' | 'starting' | 'needs_linking' | 'connected' | 'offline'
+  label: string
+  detail: string
+  daemonUrl: string
+  pairUrl: string
+  storeDir: string
+  binaryPath: string | null
+  lastImportedAt: number | null
+  importedToday: number
+  error?: string
+}
+
+export type DailyAiRun = {
+  id: number
+  run_at: number
+  scheduled_for: string
+  date_covered: string
+  status: 'running' | 'succeeded' | 'failed'
+  messages_seen: number
+  conversations_processed: number
+  outputs_written: number
+  error: string | null
+  created_at: number
+  finished_at: number | null
+}
 
 export type SyncStatus = {
   state: SyncState
@@ -193,6 +221,9 @@ export type SyncStatus = {
   uploadedCount: number
   unmatchedCount: number
   issueCount: number
+  bridgeStatus?: WhatsappBridgeStatus
+  lastInsightRun?: DailyAiRun | null
+  nextInsightRunAt?: number | null
   error?: string
 }
 
@@ -271,6 +302,7 @@ const api = {
       uploadedCount: number
       unmatchedCount: number
     }> => ipcRenderer.invoke('sync:run-recent-catchup', limit),
+    retryFailed: (): Promise<void> => ipcRenderer.invoke('sync:retry-failed'),
     dismissIssue: (issueKey: string): Promise<void> =>
       ipcRenderer.invoke('sync:dismiss-issue', issueKey),
     onStatus: (cb: (status: SyncStatus) => void): (() => void) => {
@@ -278,6 +310,28 @@ const api = {
       ipcRenderer.on('sync:status', listener)
       return () => ipcRenderer.off('sync:status', listener)
     },
+  },
+  whatsappBridge: {
+    getStatus: (): Promise<WhatsappBridgeStatus> =>
+      ipcRenderer.invoke('whatsapp-bridge:get-status'),
+    link: (): Promise<void> => ipcRenderer.invoke('whatsapp-bridge:link'),
+  },
+  insights: {
+    runNow: (): Promise<{
+      runId: number
+      messagesSeen: number
+      conversationsProcessed: number
+      outputsWritten: number
+    }> => ipcRenderer.invoke('insights:run-now'),
+    getLastRuns: (): Promise<DailyAiRun[]> => ipcRenderer.invoke('insights:get-last-runs'),
+  },
+  identity: {
+    linkChatToContact: (input: {
+      chat_id: string
+      contact_id: string
+      wa_name: string | null
+      phone: string | null
+    }): Promise<WriteResult> => ipcRenderer.invoke('identity:link-chat-to-contact', input),
   },
   wa: {
     navigateToDm: (phone: string): Promise<{ ok: boolean; error?: string }> =>

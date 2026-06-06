@@ -334,6 +334,7 @@ body {
 }
 .sync-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   margin-bottom: 16px;
 }
@@ -359,6 +360,54 @@ body {
 .sync-actions button:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+.sync-bridge {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: flex-start;
+  border: 1px solid var(--mercury);
+  border-radius: 8px;
+  padding: 10px;
+  margin: 12px 0;
+  background: #fff;
+}
+.sync-bridge strong {
+  display: block;
+  font-size: 12px;
+  color: var(--midnight);
+}
+.sync-bridge p {
+  margin: 3px 0;
+  font-size: 11px;
+  color: var(--shuttle);
+  line-height: 1.35;
+}
+.sync-bridge span {
+  display: block;
+  max-width: 230px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10px;
+  color: var(--muted);
+}
+.sync-bridge button {
+  border: 1px solid var(--burnham);
+  border-radius: 6px;
+  background: var(--burnham);
+  color: white;
+  font-size: 11px;
+  padding: 5px 9px;
+  cursor: pointer;
+}
+.sync-bridge-connected {
+  border-color: rgba(121, 214, 94, 0.8);
+}
+.sync-bridge-needs_linking,
+.sync-bridge-offline,
+.sync-bridge-not_installed {
+  border-color: rgba(234, 179, 8, 0.7);
 }
 .sync-issue-group {
   border-top: 1px solid var(--mercury);

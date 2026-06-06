@@ -25,6 +25,58 @@ CREATE INDEX IF NOT EXISTS idx_messages_chat_ts     ON messages(chat_phone, time
 CREATE INDEX IF NOT EXISTS idx_messages_session     ON messages(session_id);
 CREATE INDEX IF NOT EXISTS idx_messages_unassigned  ON messages(session_id) WHERE session_id IS NULL;
 
+-- Raw WhatsApp bridge ledger. This mirrors the local whatsmeow/MCP cache into
+-- Conversations' own userData DB so AI runs and dedupe survive daemon changes.
+-- Raw text remains local-only and is pruned after successful AI processing.
+CREATE TABLE IF NOT EXISTS bridge_messages (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  wa_message_id   TEXT NOT NULL,
+  chat_id         TEXT NOT NULL,
+  chat_kind       TEXT NOT NULL CHECK (chat_kind IN ('person','group')),
+  chat_name       TEXT,
+  sender          TEXT,
+  sender_phone    TEXT,
+  direction       TEXT NOT NULL CHECK (direction IN ('inbound','outbound')),
+  text            TEXT,
+  media_type      TEXT,
+  timestamp_ms    INTEGER NOT NULL,
+  captured_at     INTEGER NOT NULL DEFAULT (unixepoch() * 1000),
+  ai_processed_at INTEGER,
+  synced_at       INTEGER,
+  contact_id      TEXT,
+  UNIQUE(chat_id, wa_message_id)
+);
+CREATE INDEX IF NOT EXISTS idx_bridge_messages_ts
+  ON bridge_messages(timestamp_ms);
+CREATE INDEX IF NOT EXISTS idx_bridge_messages_chat_ts
+  ON bridge_messages(chat_id, timestamp_ms);
+CREATE INDEX IF NOT EXISTS idx_bridge_messages_unprocessed
+  ON bridge_messages(ai_processed_at, timestamp_ms)
+  WHERE ai_processed_at IS NULL;
+
+CREATE TABLE IF NOT EXISTS daily_ai_runs (
+  id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_at                   INTEGER NOT NULL,
+  scheduled_for            TEXT NOT NULL,
+  date_covered             TEXT NOT NULL,
+  status                   TEXT NOT NULL CHECK (status IN ('running','succeeded','failed')),
+  messages_seen            INTEGER NOT NULL DEFAULT 0,
+  conversations_processed  INTEGER NOT NULL DEFAULT 0,
+  outputs_written          INTEGER NOT NULL DEFAULT 0,
+  error                    TEXT,
+  created_at               INTEGER NOT NULL DEFAULT (unixepoch() * 1000),
+  finished_at              INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_daily_ai_runs_created
+  ON daily_ai_runs(created_at DESC);
+
+CREATE TABLE IF NOT EXISTS ai_output_dedupe (
+  source_key   TEXT PRIMARY KEY,
+  target       TEXT NOT NULL,
+  supabase_id  TEXT,
+  created_at   INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
+);
+
 -- One row per 6h sliding-window conversation session.
 CREATE TABLE IF NOT EXISTS sessions (
   id                        INTEGER PRIMARY KEY AUTOINCREMENT,

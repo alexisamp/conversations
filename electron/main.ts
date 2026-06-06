@@ -26,6 +26,8 @@ import { insertMessage, assignMessageToSession, type MessageInput } from './db/l
 import { handleMessage, recoverOpenSessions } from './session-manager'
 import { startSync, stopSync } from './sync/supabase-sync'
 import { createSyncCoordinator, type SyncStatus } from './sync/sync-coordinator'
+import { WhatsappBridge } from './whatsapp/bridge'
+import { DailyInsightRunner, nextInsightRunAt } from './ai/daily-insights'
 import { autoUpdater } from 'electron-updater'
 
 // Cache phone → contactId so we don't re-resolve on every message.
@@ -62,6 +64,9 @@ export function getLinkedinWebContents(): Electron.WebContents | null {
 let sidebarView: WebContentsView | null = null
 let searchOverlayView: WebContentsView | null = null
 let syncCoordinator: ReturnType<typeof createSyncCoordinator> | null = null
+const whatsappBridge = new WhatsappBridge()
+let insightRunner: DailyInsightRunner | null = null
+let insightTimer: ReturnType<typeof setTimeout> | null = null
 let sidebarVisible = true
 let activeTab: Tab = 'wa'
 let overlayVisible = false
@@ -482,9 +487,23 @@ async function createMainWindow(): Promise<void> {
     importBackfillWindows,
     resolveContactByPhone: resolveContactIdByPhoneStrict,
     publishStatus: (status: SyncStatus) => {
-      sidebarView?.webContents.send('sync:status', status)
+      publishSyncStatus(status)
     },
   })
+  insightRunner = new DailyInsightRunner({
+    bridge: whatsappBridge,
+    resolveContact: resolveBridgeChatContact,
+    publishStatus: publishSyncStatus,
+  })
+  void whatsappBridge.ensureStarted().finally(() => publishSyncStatus())
+  setTimeout(() => {
+    void insightRunner?.runNow('startup catch-up')
+      .catch((err) => {
+        console.warn('[insights] startup catch-up skipped:', err instanceof Error ? err.message : err)
+      })
+      .finally(() => publishSyncStatus())
+  }, 20_000)
+  scheduleInsightRunner()
 
   // Z-order: first added = back. Tab bar + overlay are topmost.
   mainWindow.contentView.addChildView(whatsappView)
@@ -496,15 +515,22 @@ async function createMainWindow(): Promise<void> {
   refreshLayout()
   mainWindow.on('resize', refreshLayout)
 
-  // ── Load content ──
-  await whatsappView.webContents.loadURL(WHATSAPP_URL)
-  await linkedinView.webContents.loadURL(LINKEDIN_URL)
+  mainWindow.show()
+  mainWindow.focus()
 
+  // ── Load content ──
   if (IS_DEV) {
     await sidebarView.webContents.loadURL(SIDEBAR_DEV_URL)
   } else {
     await sidebarView.webContents.loadFile(SIDEBAR_PROD_FILE)
   }
+
+  void whatsappView.webContents.loadURL(WHATSAPP_URL).catch((err) => {
+    console.warn('[wa] initial load failed:', err instanceof Error ? err.message : err)
+  })
+  void linkedinView.webContents.loadURL(LINKEDIN_URL).catch((err) => {
+    console.warn('[li] initial load failed:', err instanceof Error ? err.message : err)
+  })
 
   // Broadcast initial active tab to the tab bar
   tabBarView.webContents.send('tab:active-changed', activeTab)
@@ -521,6 +547,11 @@ async function createMainWindow(): Promise<void> {
     sidebarView = null
     searchOverlayView = null
     syncCoordinator = null
+    insightRunner = null
+    if (insightTimer) {
+      clearTimeout(insightTimer)
+      insightTimer = null
+    }
   })
 }
 
@@ -587,6 +618,45 @@ function switchTab(next: Tab): void {
   sidebarView?.webContents.send('sidebar:context', { tab: activeTab, state: context })
 }
 
+async function combinedSyncStatus(base?: SyncStatus): Promise<SyncStatus> {
+  const status = base ?? syncCoordinator?.getStatus() ?? {
+    state: 'idle',
+    label: 'Not ready',
+    detail: 'Sync coordinator is starting',
+    activeJob: null,
+    lastRunAt: null,
+    uploadedCount: 0,
+    unmatchedCount: 0,
+    issueCount: 0,
+  }
+  const bridgeStatus = await whatsappBridge.getStatus()
+  return {
+    ...status,
+    bridgeStatus,
+    lastInsightRun: insightRunner?.getLastRuns(1)[0] ?? null,
+    nextInsightRunAt: insightRunner?.getNextRunAt() ?? nextInsightRunAt(),
+  } as SyncStatus
+}
+
+function publishSyncStatus(base?: SyncStatus): void {
+  void combinedSyncStatus(base)
+    .then((status) => sidebarView?.webContents.send('sync:status', status))
+    .catch((err) => console.warn('[sync] failed to publish combined status:', err))
+}
+
+function scheduleInsightRunner(): void {
+  if (!insightRunner) return
+  if (insightTimer) clearTimeout(insightTimer)
+  const next = insightRunner.getNextRunAt()
+  const delay = Math.max(1000, next - Date.now())
+  insightTimer = setTimeout(() => {
+    void insightRunner?.runNow('scheduled')
+      .catch((err) => console.error('[insights] scheduled run failed:', err))
+      .finally(() => scheduleInsightRunner())
+  }, delay)
+  publishSyncStatus()
+}
+
 function toggleSidebar(): void {
   sidebarVisible = !sidebarVisible
   refreshLayout()
@@ -628,6 +698,60 @@ async function resolveContactIdByPhoneStrict(phone: string): Promise<string | nu
     .limit(1)
     .maybeSingle()
   return contact ? (contact.id as string) : null
+}
+
+async function resolveBridgeChatContact(input: {
+  chatId: string
+  phone: string | null
+  waName: string | null
+}): Promise<string | null> {
+  const { getSupabase } = await import('./supabase/client')
+  const { phoneVariants } = await import('./utils/phone')
+  const supabase = getSupabase()
+  const identifiers = new Set<string>([`jid:${input.chatId}`, input.chatId])
+  if (input.waName?.trim()) identifiers.add(`waname:${input.waName.trim()}`)
+  if (input.phone) {
+    for (const variant of phoneVariants(input.phone)) identifiers.add(variant)
+  }
+
+  const { data: channel } = await supabase
+    .from('contact_channels')
+    .select('outreach_log_id')
+    .eq('channel', 'whatsapp')
+    .in('channel_identifier', [...identifiers])
+    .limit(1)
+    .maybeSingle()
+  if (channel) return channel.outreach_log_id as string
+  if (input.phone) return resolveContactIdByPhoneStrict(input.phone)
+  return null
+}
+
+async function linkBridgeChatToContact(input: {
+  chat_id: string
+  contact_id: string
+  wa_name: string | null
+  phone: string | null
+}): Promise<{ ok: true } | { ok: false; error: string }> {
+  try {
+    const { getSupabase } = await import('./supabase/client')
+    const supabase = getSupabase()
+    const identifier = input.phone || `jid:${input.chat_id}`
+    const { error } = await supabase.from('contact_channels').insert({
+      outreach_log_id: input.contact_id,
+      channel: 'whatsapp',
+      channel_identifier: identifier,
+      channel_name: input.wa_name,
+      verified: true,
+    })
+    if (error && error.code !== '23505') return { ok: false, error: error.message }
+
+    await insightRunner?.runChat(input.chat_id)
+    phoneContactIdCache.clear()
+    publishSyncStatus()
+    return { ok: true }
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) }
+  }
 }
 
 function attachDiagnosticListeners(view: WebContentsView, label: 'wa' | 'li'): void {
@@ -1391,6 +1515,7 @@ async function importBackfillWindows(
         direction: win.direction,
         notes,
         interaction_date: interactionDate,
+        channel: 'whatsapp',
       })
       .select('id')
       .single()
@@ -1399,6 +1524,15 @@ async function importBackfillWindows(
       console.warn('[backfill] interaction insert failed:', iErr)
       continue
     }
+
+    await client
+      .from('outreach_logs')
+      .update({
+        last_interaction_at: new Date(win.timestamp).toISOString(),
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', input.contactId)
+      .eq('user_id', user.id)
 
     const windowStartIso = new Date(win.timestamp).toISOString()
     const windowEndIso = new Date(win.windowEnd).toISOString()
@@ -1463,16 +1597,7 @@ function wireUpdaterEvents(): void {
 
 function registerIpc(): void {
   ipcMain.handle('sidebar:toggle', () => toggleSidebar())
-  ipcMain.handle('sync:get-status', () => syncCoordinator?.getStatus() ?? {
-    state: 'idle',
-    label: 'Not ready',
-    detail: 'Sync coordinator is starting',
-    activeJob: null,
-    lastRunAt: null,
-    uploadedCount: 0,
-    unmatchedCount: 0,
-    issueCount: 0,
-  })
+  ipcMain.handle('sync:get-status', () => combinedSyncStatus())
   ipcMain.handle('sync:list-issues', () => syncCoordinator?.listIssues() ?? [])
   ipcMain.handle('sync:run-active-chat', async () => {
     if (!syncCoordinator) throw new Error('Sync coordinator not ready')
@@ -1485,6 +1610,25 @@ function registerIpc(): void {
   ipcMain.handle('sync:dismiss-issue', (_event, issueKey: string) => {
     syncCoordinator?.dismissIssue(issueKey)
   })
+  ipcMain.handle('sync:retry-failed', async () => {
+    await insightRunner?.runNow('manual retry')
+    publishSyncStatus()
+  })
+  ipcMain.handle('whatsapp-bridge:get-status', () => whatsappBridge.getStatus())
+  ipcMain.handle('whatsapp-bridge:link', () => whatsappBridge.openPairing())
+  ipcMain.handle('insights:run-now', async () => {
+    if (!insightRunner) throw new Error('Insight runner not ready')
+    const result = await insightRunner.runNow('manual')
+    publishSyncStatus()
+    return result
+  })
+  ipcMain.handle('insights:get-last-runs', () => insightRunner?.getLastRuns(10) ?? [])
+  ipcMain.handle('identity:link-chat-to-contact', (_event, input: {
+    chat_id: string
+    contact_id: string
+    wa_name: string | null
+    phone: string | null
+  }) => linkBridgeChatToContact(input))
 
   // Updater IPCs — explicit 3-step flow:
   //   check → (if available) download → (when downloaded) restart-install

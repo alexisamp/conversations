@@ -1,6 +1,6 @@
 {
   "name": "conversations",
-  "version": "0.0.27",
+  "version": "0.0.28",
   "private": true,
   "description": "Native macOS WhatsApp client with a reThink CRM sidebar",
   "main": "dist/electron/main.js",
@@ -8,7 +8,7 @@
     "clean": "rm -rf dist",
     "postinstall": "electron-rebuild -f -w better-sqlite3",
     "rebuild:native": "electron-rebuild -f -w better-sqlite3",
-    "build:main": "tsc -p tsconfig.main.json && mkdir -p dist/electron/db && cp electron/db/schema.sql dist/electron/db/schema.sql",
+    "build:main": "find electron -type f \\( -name '*.ts' -o -name '*.tsx' \\) -print0 | xargs -0 -n 6 esbuild --platform=node --format=cjs --target=es2022 --sourcemap --outbase=electron --outdir=dist/electron && mkdir -p dist/electron/db && cp electron/db/schema.sql dist/electron/db/schema.sql",
     "build:renderer": "vite build",
     "build": "npm run build:main && npm run build:renderer",
     "start": "npm run build && electron .",

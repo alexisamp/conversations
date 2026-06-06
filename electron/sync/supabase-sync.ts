@@ -134,6 +134,7 @@ async function processOp(
           direction: payload.direction ?? 'outbound',
           notes: null, // filled later by interaction:update_notes
           interaction_date: interactionDate,
+          channel: payload.channel ?? 'whatsapp',
         })
         .select('id')
         .single()
@@ -148,10 +149,12 @@ async function processOp(
       }
 
       // Also bump last_interaction_at on the contact
+      const lastInteractionIso = payload.window_start ??
+        (interactionDate ? `${interactionDate}T12:00:00.000Z` : new Date().toISOString())
       const nowIso = new Date().toISOString()
       await supabase
         .from('outreach_logs')
-        .update({ last_interaction_at: nowIso, updated_at: nowIso })
+        .update({ last_interaction_at: lastInteractionIso, updated_at: nowIso })
         .eq('id', payload.contact_id)
 
       console.log(

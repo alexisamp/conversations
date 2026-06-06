@@ -95,6 +95,8 @@ export function handleMessage(msg: MessageInput, contactId: string | null): numb
       type: 'whatsapp',
       direction: msg.direction,
       interaction_date: new Date(msg.timestamp_ms).toISOString().slice(0, 10),
+      channel: 'whatsapp',
+      window_start: new Date(msg.timestamp_ms).toISOString(),
     })
     enqueueSync('window:insert', {
       session_id: sessionId,

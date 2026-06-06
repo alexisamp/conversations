@@ -32,6 +32,7 @@ export function MainScreen({ email }: { email: string }) {
   const [syncIssues, setSyncIssues] = useState<SyncIssue[]>([])
   const [syncDrawerOpen, setSyncDrawerOpen] = useState(false)
   const [syncBusy, setSyncBusy] = useState(false)
+  const [resolvingIssue, setResolvingIssue] = useState<SyncIssue | null>(null)
   const [personLookup, setPersonLookup] = useState<PersonLookupState>({ kind: 'idle' })
   const [view, setView] = useState<'main' | 'settings'>('main')
   const lastHitPhoneRef = useRef<string | null>(null)
@@ -121,6 +122,31 @@ export function MainScreen({ email }: { email: string }) {
     await refreshSync()
   }
 
+  async function runInsights() {
+    setSyncBusy(true)
+    try {
+      await window.conv.insights.runNow()
+      await refreshSync()
+    } finally {
+      setSyncBusy(false)
+    }
+  }
+
+  async function retryFailed() {
+    setSyncBusy(true)
+    try {
+      await window.conv.sync.retryFailed()
+      await refreshSync()
+    } finally {
+      setSyncBusy(false)
+    }
+  }
+
+  async function openBridgePairing() {
+    await window.conv.whatsappBridge.link()
+    await refreshSync()
+  }
+
   async function handleManualSubmit(event: React.FormEvent) {
     event.preventDefault()
     const trimmed = phoneInput.trim()
@@ -207,7 +233,26 @@ export function MainScreen({ email }: { email: string }) {
           onClose={() => setSyncDrawerOpen(false)}
           onRunCatchUp={runCatchUp}
           onRunActive={runActiveSync}
+          onRunInsights={runInsights}
+          onRetryFailed={retryFailed}
+          onOpenBridgePairing={openBridgePairing}
+          onResolveIssue={setResolvingIssue}
           onDismissIssue={dismissSyncIssue}
+        />
+      )}
+      {resolvingIssue && (
+        <MapParticipantModal
+          participant={{
+            phone: issuePhone(resolvingIssue),
+            lid: null,
+            waName: issueName(resolvingIssue),
+            avatarDataUrl: null,
+          }}
+          onClose={() => setResolvingIssue(null)}
+          onDone={async () => {
+            setResolvingIssue(null)
+            await runInsights()
+          }}
         />
       )}
     </div>
@@ -253,6 +298,10 @@ function SyncDrawer({
   onClose,
   onRunCatchUp,
   onRunActive,
+  onRunInsights,
+  onRetryFailed,
+  onOpenBridgePairing,
+  onResolveIssue,
   onDismissIssue,
 }: {
   status: SyncStatus
@@ -261,11 +310,16 @@ function SyncDrawer({
   onClose: () => void
   onRunCatchUp: () => void
   onRunActive: () => void
+  onRunInsights: () => void
+  onRetryFailed: () => void
+  onOpenBridgePairing: () => void
+  onResolveIssue: (issue: SyncIssue) => void
   onDismissIssue: (issueKey: string) => void
 }) {
   const identityIssues = issues.filter((issue) => issue.kind === 'identity_resolution')
   const errorIssues = issues.filter((issue) => issue.kind === 'sync_error')
   const historyIssues = issues.filter((issue) => issue.kind === 'history_import')
+  const bridge = status.bridgeStatus
 
   return (
     <div className="sync-drawer-backdrop" onClick={onClose}>
@@ -294,7 +348,32 @@ function SyncDrawer({
             <strong>{status.lastRunAt ? formatSyncAgo(status.lastRunAt) : 'never'}</strong>
             <span>last run</span>
           </div>
+          <div>
+            <strong>{bridge?.importedToday ?? 0}</strong>
+            <span>bridge today</span>
+          </div>
+          <div>
+            <strong>{status.lastInsightRun ? formatSyncAgo(status.lastInsightRun.created_at) : 'never'}</strong>
+            <span>last AI</span>
+          </div>
+          <div>
+            <strong>{status.nextInsightRunAt ? formatClock(status.nextInsightRunAt) : 'n/a'}</strong>
+            <span>next AI</span>
+          </div>
         </div>
+
+        {bridge && (
+          <div className={`sync-bridge sync-bridge-${bridge.state}`}>
+            <div>
+              <strong>{bridge.label}</strong>
+              <p>{bridge.detail}</p>
+              <span>{bridge.storeDir}</span>
+            </div>
+            {(bridge.state === 'needs_linking' || bridge.state === 'not_installed' || bridge.state === 'offline') && (
+              <button onClick={onOpenBridgePairing}>Pair</button>
+            )}
+          </div>
+        )}
 
         <div className="sync-actions">
           <button className="primary" disabled={busy || status.state === 'scanning'} onClick={onRunCatchUp}>
@@ -303,13 +382,20 @@ function SyncDrawer({
           <button className="ghost" disabled={busy || status.state === 'scanning'} onClick={onRunActive}>
             Sync active chat
           </button>
+          <button className="ghost" disabled={busy || status.state === 'scanning'} onClick={onRunInsights}>
+            Run AI now
+          </button>
+          <button className="ghost" disabled={busy || status.state === 'scanning'} onClick={onRetryFailed}>
+            Retry failed
+          </button>
         </div>
 
         <SyncIssueGroup
           title="Identity resolution"
           empty="No unmatched conversations."
           issues={identityIssues}
-          actionLabel="Resolve in reThink Review"
+          actionLabel="Link or create contact"
+          onResolveIssue={onResolveIssue}
           onDismissIssue={onDismissIssue}
         />
         <SyncIssueGroup
@@ -317,6 +403,7 @@ function SyncDrawer({
           empty="No sync errors."
           issues={errorIssues}
           actionLabel="Retry catch-up"
+          onResolveIssue={onResolveIssue}
           onDismissIssue={onDismissIssue}
         />
         <SyncIssueGroup
@@ -324,6 +411,7 @@ function SyncDrawer({
           empty="No deep imports needed."
           issues={historyIssues}
           actionLabel="Import manually"
+          onResolveIssue={onResolveIssue}
           onDismissIssue={onDismissIssue}
         />
       </aside>
@@ -336,12 +424,14 @@ function SyncIssueGroup({
   empty,
   issues,
   actionLabel,
+  onResolveIssue,
   onDismissIssue,
 }: {
   title: string
   empty: string
   issues: SyncIssue[]
   actionLabel: string
+  onResolveIssue: (issue: SyncIssue) => void
   onDismissIssue: (issueKey: string) => void
 }) {
   return (
@@ -361,6 +451,9 @@ function SyncIssueGroup({
                 {issue.detail && <p>{issue.detail}</p>}
                 <span>{actionLabel}</span>
               </div>
+              {issue.kind === 'identity_resolution' && (
+                <button onClick={() => onResolveIssue(issue)}>Resolve</button>
+              )}
               <button onClick={() => onDismissIssue(issue.issue_key)}>Dismiss</button>
             </li>
           ))}
@@ -377,6 +470,25 @@ function formatSyncAgo(timestamp: number) {
   const hours = Math.round(minutes / 60)
   if (hours < 24) return `${hours}h`
   return `${Math.round(hours / 24)}d`
+}
+
+function formatClock(timestamp: number) {
+  return new Intl.DateTimeFormat(undefined, {
+    hour: 'numeric',
+    minute: '2-digit',
+  }).format(new Date(timestamp))
+}
+
+function issuePhone(issue: SyncIssue): string | null {
+  const raw = issue.chat_key || ''
+  if (/^\+?\d{7,16}$/.test(raw)) return raw.startsWith('+') ? raw : `+${raw}`
+  const jidUser = raw.split('@')[0]
+  if (/^\d{7,16}$/.test(jidUser)) return `+${jidUser}`
+  return null
+}
+
+function issueName(issue: SyncIssue): string | null {
+  return issue.title?.replace(/^Link WhatsApp chat:\s*/i, '').trim() || null
 }
 
 // ─── Body router ──────────────────────────────────────────────────────
@@ -478,6 +590,7 @@ function PersonNotFound({
     // the next WA message picks up the new contactId and sessions
     // get properly linked.
     if (phone) window.conv.wa.invalidatePhoneCache(phone)
+    void window.conv.insights.runNow().catch(() => {})
     onCreated()
   }
 
