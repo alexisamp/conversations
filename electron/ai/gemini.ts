@@ -103,7 +103,7 @@ export type WhatsappInsightExtraction = {
   next_step_date: string | null
   next_step_owner: 'me' | 'them' | null
   contact_facts: Array<{
-    category: 'family' | 'career_intel' | 'compensation' | 'obsession' | 'hot_button' | 'life_phase' | 'pet_peeve' | 'origin_story' | 'health' | 'preference' | 'other'
+    category: 'family' | 'career_intel' | 'compensation' | 'obsession' | 'hot_button' | 'life_phase' | 'origin_story' | 'preference' | 'other'
     label: string | null
     value: string
     importance: 1 | 2 | 3
@@ -171,6 +171,39 @@ function normalizeValueLogs(valueLogs: WhatsappInsightExtraction['value_logs']):
     })
 }
 
+function normalizeContactFacts(facts: WhatsappInsightExtraction['contact_facts']): WhatsappInsightExtraction['contact_facts'] {
+  const allowed = new Set([
+    'family',
+    'career_intel',
+    'compensation',
+    'obsession',
+    'hot_button',
+    'life_phase',
+    'origin_story',
+    'preference',
+    'other',
+  ])
+  return facts
+    .filter((fact) => fact.value?.trim())
+    .map((fact) => ({
+      category: allowed.has(fact.category) ? fact.category : 'other',
+      label: fact.label,
+      value: fact.value.trim(),
+      importance: fact.importance === 3 || fact.importance === 1 ? fact.importance : 2,
+      needs_review: Boolean(fact.needs_review),
+    }))
+    .filter((fact) => {
+      const text = `${fact.label ?? ''} ${fact.value}`.toLowerCase()
+      if (/\b(cumpleaños|birthday|aniversario|anniversary|fecha importante|nació|nacimiento|vuelve|regresa|sale de viaje|vacaciones|viaje)\b/i.test(text)) return true
+      if (/\b(hijo|hija|niño|niña|bebé|bebe|espos|pareja|mamá|mama|papá|papa|herman|familia)\b/i.test(text) && /\b(se llama|llamad|nombre|tiene|nació|vive)\b/i.test(text)) return true
+      if (/\b(vive|reside|se mud|mudanza|ubicad|ciudad|país|pais|boston|chile|usa|estados unidos)\b/i.test(text)) return true
+      if (/\b(trabaja|rol|cargo|empresa|compañía|compania|reclut|consultor|founder|manager|director|busca trabajo|empleo)\b/i.test(text)) return true
+      if (/\b(le gusta|ama|apasiona|fan de|prefiere|odia|no le gusta|obsesion)\b/i.test(text)) return true
+      if (fact.category === 'compensation' || fact.category === 'origin_story') return true
+      return false
+    })
+}
+
 export async function extractWhatsappInsights(input: {
   conversationText: string
   interactionDate: string
@@ -195,7 +228,15 @@ export async function extractWhatsappInsights(input: {
     'No copies mensajes crudos largos. Escribe resúmenes breves y accionables.',
     'La conversación ya viene cortada por día local y por ventana corta; NO consolides varios días.',
     'El campo summary solo va a interactions.notes. No escondas facts, valor o tareas dentro del summary.',
-    'Si aparece un hecho durable sobre la persona, va en contact_facts. Si es sensible o ambiguo, usa needs_review=true.',
+    'contact_facts también es estricto: solo memoria durable y útil para relación/CRM.',
+    'Incluye facts solo si son de estas clases:',
+    '- fechas relevantes: cumpleaños, aniversarios, fecha de viaje/vuelta, mudanza, eventos importantes.',
+    '- familia estable: nombres de hijos/pareja/padres/hermanos, relaciones importantes.',
+    '- ubicación estable: dónde vive, ciudad/país, mudanza.',
+    '- trabajo/carrera: rol, empresa, búsqueda laboral, proyecto profesional relevante.',
+    '- gustos/pasiones/preferencias fuertes: hobbies, cosas que ama/odia/prefiere repetidamente.',
+    '- compensación o información sensible estable, con needs_review=true si corresponde.',
+    'NO es fact: dolor/síntoma del día, logística cotidiana, comida puntual, ánimo pasajero, una queja momentánea, accidente menor, coordinación familiar normal, conversación casual.',
     'value_logs es MUY estricto. Solo incluye valor si hay una de estas señales explícitas:',
     '- introduction: se presentó o conectó a una persona concreta.',
     '- content: se compartió un archivo, link, documento, CV, plantilla, recurso o media relevante.',
@@ -213,7 +254,7 @@ export async function extractWhatsappInsights(input: {
     '  "next_step": "acción concreta o null",',
     '  "next_step_date": "YYYY-MM-DD o null",',
     '  "next_step_owner": "me | them | null",',
-    '  "contact_facts": [{"category":"family|career_intel|compensation|obsession|hot_button|life_phase|pet_peeve|origin_story|health|preference|other","label":null|string,"value":"hecho durable","importance":1|2|3,"needs_review":true|false}],',
+    '  "contact_facts": [{"category":"family|career_intel|compensation|obsession|hot_button|life_phase|origin_story|preference|other","label":null|string,"value":"hecho durable, estable y útil","importance":1|2|3,"needs_review":true|false}],',
     '  "value_logs": [{"type":"introduction|content|referral|opportunity","direction":"given|received","description":"valor explícito, no conversación normal"}],',
     '  "todos": [{"text":"tarea concreta","date":"YYYY-MM-DD|null"}]',
     '}',
@@ -256,7 +297,7 @@ export async function extractWhatsappInsights(input: {
       next_step: typeof parsed.next_step === 'string' && parsed.next_step.trim() ? parsed.next_step.trim() : null,
       next_step_date: typeof parsed.next_step_date === 'string' && parsed.next_step_date.trim() ? parsed.next_step_date.trim() : null,
       next_step_owner: parsed.next_step_owner === 'me' || parsed.next_step_owner === 'them' ? parsed.next_step_owner : null,
-      contact_facts: Array.isArray(parsed.contact_facts) ? parsed.contact_facts : [],
+      contact_facts: Array.isArray(parsed.contact_facts) ? normalizeContactFacts(parsed.contact_facts) : [],
       value_logs: Array.isArray(parsed.value_logs) ? normalizeValueLogs(parsed.value_logs) : [],
       todos: Array.isArray(parsed.todos) ? parsed.todos : [],
     }
