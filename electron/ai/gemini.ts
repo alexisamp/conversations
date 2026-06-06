@@ -158,6 +158,7 @@ function normalizeValueLogs(valueLogs: WhatsappInsightExtraction['value_logs']):
     }))
     .filter((value) => {
       const text = value.description.toLowerCase()
+      if (/\b(posiblemente|quizás|quizas|tal vez|parece|podría|podria)\b/i.test(text)) return false
       if (value.type === 'introduction') {
         return /\b(introdu|present|conect|conex|intro)\w*/i.test(text)
       }
