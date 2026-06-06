@@ -197,12 +197,26 @@ function normalizeContactFacts(facts: WhatsappInsightExtraction['contact_facts']
       if (/\b(dolor|duele|síntoma|sintoma|enfermo|enferma|resfrío|resfrio|uña|golpe|me pegué|me pegue|cansad|sueño|hambre|lloró|lloro)\b/i.test(text)) return false
       if (/\b(hoy|ayer|mañana|manana|recién|recien|ahora|rato|almuerzo|cena|desayuno|uber|pedido|supermercado|llegando|salgo|llego)\b/i.test(text) && !/\b(viaje|vacaciones|vuelve|regresa|cumpleaños|birthday|aniversario|entrevista|trabajo|rol)\b/i.test(text)) return false
       if (/\b(cumpleaños|birthday|aniversario|anniversary|fecha importante|nació|nacimiento|vuelve|regresa|sale de viaje|vacaciones|viaje)\b/i.test(text)) return true
-      if (/\b(hijo|hija|niño|niña|bebé|bebe|espos|pareja|mamá|mama|papá|papa|herman|familia)\b/i.test(text) && /\b(se llama|llamad|nombre|tiene|nació|vive)\b/i.test(text)) return true
+      if (/\b(hijo|hija|niño|niña|bebé|bebe|espos|pareja|mamá|mama|papá|papa|herman|familia)\b/i.test(text) && /\b(se llama|llamad|nombre|nació|vive|cumpleaños|birthday)\b/i.test(text)) return true
       if (/\b(vive|reside|se mud|mudanza|ubicad|ciudad|país|pais|boston|chile|usa|estados unidos)\b/i.test(text)) return true
       if (/\b(trabaja|rol|cargo|empresa|compañía|compania|reclut|consultor|founder|manager|director|busca trabajo|empleo)\b/i.test(text)) return true
       if (/\b(le gusta|ama|apasiona|fan de|prefiere|odia|no le gusta|obsesion)\b/i.test(text)) return true
       if (fact.category === 'compensation' || fact.category === 'origin_story') return true
       return false
+    })
+}
+
+function normalizeTodos(todos: WhatsappInsightExtraction['todos']): WhatsappInsightExtraction['todos'] {
+  return todos
+    .filter((todo) => todo.text?.trim())
+    .map((todo) => ({
+      text: todo.text.trim(),
+      date: todo.date?.trim() || null,
+    }))
+    .filter((todo) => {
+      const text = todo.text.toLowerCase()
+      if (/\b(fajita|quesadilla|pollo|chocolate|costco|supermercado|carro|botella|agua|té|te |fórmula|formula|dormir|sueño|sueno|bebé|bebe|pañal|cocina|cocinar|almuerzo|cena|desayuno|avisar cuando salga|llegue|llegar)\b/i.test(text)) return false
+      return /\b(reun|meeting|llamar|call|email|correo|mandar|enviar|compartir|present|introdu|conect|follow|seguimiento|cv|curriculum|resume|entrevista|trabajo|rol|postul|proyecto|cliente|lead|oportunidad|documento|archivo|link|agenda|coordinar|confirmar)\b/i.test(text)
     })
 }
 
@@ -247,7 +261,9 @@ export async function extractWhatsappInsights(input: {
     '- opportunity: se compartió una oportunidad, lead, trabajo, cliente o deal concreto.',
     '- content también puede usarse para info relevante NO pública y accionable, pero la descripción debe empezar con "Info no pública:".',
     'NO es value: apoyo emocional, ánimo, opinión, coordinación familiar, logística, bromas, consejos genéricos, cariño, pagos cotidianos, disponibilidad o conversación normal.',
-    'Si hay compromiso o siguiente paso concreto, va en todos y, si corresponde, también next_step.',
+    'todos también es estricto: solo compromisos/follow-ups relevantes para CRM, carrera, proyecto, intro, documento, reunión, oportunidad o relación profesional/personal significativa.',
+    'NO es todo: comida, supermercado, traer cosas, sueño del bebé, fórmula, salud cotidiana, logística doméstica, avisar al salir/llegar o coordinación normal del día.',
+    'Si hay compromiso o siguiente paso concreto y relevante, va en todos y, si corresponde, también next_step.',
     `Fecha exacta de interacción: ${input.interactionDate}. Usa esa fecha para todos/tareas si no hay otra fecha explícita.`,
     input.contactName ? `Contacto: ${input.contactName}` : '',
     '',
@@ -302,7 +318,7 @@ export async function extractWhatsappInsights(input: {
       next_step_owner: parsed.next_step_owner === 'me' || parsed.next_step_owner === 'them' ? parsed.next_step_owner : null,
       contact_facts: Array.isArray(parsed.contact_facts) ? normalizeContactFacts(parsed.contact_facts) : [],
       value_logs: Array.isArray(parsed.value_logs) ? normalizeValueLogs(parsed.value_logs) : [],
-      todos: Array.isArray(parsed.todos) ? parsed.todos : [],
+      todos: Array.isArray(parsed.todos) ? normalizeTodos(parsed.todos) : [],
     }
   } catch (err) {
     console.error('[gemini] extraction failed:', err)
