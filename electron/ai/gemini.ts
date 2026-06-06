@@ -194,6 +194,8 @@ function normalizeContactFacts(facts: WhatsappInsightExtraction['contact_facts']
     }))
     .filter((fact) => {
       const text = `${fact.label ?? ''} ${fact.value}`.toLowerCase()
+      if (/\b(dolor|duele|síntoma|sintoma|enfermo|enferma|resfrío|resfrio|uña|golpe|me pegué|me pegue|cansad|sueño|hambre|lloró|lloro)\b/i.test(text)) return false
+      if (/\b(hoy|ayer|mañana|manana|recién|recien|ahora|rato|almuerzo|cena|desayuno|uber|pedido|supermercado|llegando|salgo|llego)\b/i.test(text) && !/\b(viaje|vacaciones|vuelve|regresa|cumpleaños|birthday|aniversario|entrevista|trabajo|rol)\b/i.test(text)) return false
       if (/\b(cumpleaños|birthday|aniversario|anniversary|fecha importante|nació|nacimiento|vuelve|regresa|sale de viaje|vacaciones|viaje)\b/i.test(text)) return true
       if (/\b(hijo|hija|niño|niña|bebé|bebe|espos|pareja|mamá|mama|papá|papa|herman|familia)\b/i.test(text) && /\b(se llama|llamad|nombre|tiene|nació|vive)\b/i.test(text)) return true
       if (/\b(vive|reside|se mud|mudanza|ubicad|ciudad|país|pais|boston|chile|usa|estados unidos)\b/i.test(text)) return true
@@ -236,6 +238,7 @@ export async function extractWhatsappInsights(input: {
     '- trabajo/carrera: rol, empresa, búsqueda laboral, proyecto profesional relevante.',
     '- gustos/pasiones/preferencias fuertes: hobbies, cosas que ama/odia/prefiere repetidamente.',
     '- compensación o información sensible estable, con needs_review=true si corresponde.',
+    'Evita facts genéricos repetidos. Si ya queda claro que tiene hijo/pareja/vive en X, no repitas variantes salvo que aparezca un nombre, fecha o dato nuevo.',
     'NO es fact: dolor/síntoma del día, logística cotidiana, comida puntual, ánimo pasajero, una queja momentánea, accidente menor, coordinación familiar normal, conversación casual.',
     'value_logs es MUY estricto. Solo incluye valor si hay una de estas señales explícitas:',
     '- introduction: se presentó o conectó a una persona concreta.',
@@ -265,7 +268,7 @@ export async function extractWhatsappInsights(input: {
   ].filter(Boolean).join('\n')
 
   const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(), 45_000)
+  const timeout = setTimeout(() => controller.abort(), 25_000)
 
   try {
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${getModel()}:generateContent?key=${apiKey}`

@@ -105,6 +105,41 @@ function scheduledLabel(ms = Date.now()): string {
   }).format(new Date(ms))
 }
 
+function normalizeForKey(value: string): string {
+  return value
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9$]+/g, ' ')
+    .trim()
+}
+
+function factSemanticKey(contactId: string | null, category: string | null, value: string): string | null {
+  if (!contactId) return null
+  const text = normalizeForKey(value)
+  if (!text) return null
+
+  if (/\b(hijo|hija|nino|nina|bebe)\b/.test(text)) {
+    const nameMatch = text.match(/\b(?:llamad[oa]?|nombre|se llama)\s+([a-z]{2,})\b/)
+    return `${contactId}|family|child|${nameMatch?.[1] ?? 'exists'}`
+  }
+  if (/\b(espos[ao]|pareja|marid[ao])\b/.test(text)) return `${contactId}|family|partner`
+  if (/\b(boston)\b/.test(text)) return `${contactId}|location|boston`
+  if (/\b(chile)\b/.test(text)) return `${contactId}|location|chile`
+  if (/\b(usa|estados unidos|united states)\b/.test(text)) return `${contactId}|location|usa`
+  if (/\b(busca trabajo|buscando empleo|busqueda laboral|networking|pipeline)\b/.test(text)) return `${contactId}|career|job-search`
+  if (/\b(salario|compensacion|sueldo|bonus|bono|\$)\b/.test(text)) return `${contactId}|compensation|${text.slice(0, 90)}`
+  if (/\b(chocolate)\b/.test(text)) return `${contactId}|preference|chocolate`
+  if (/\b(prefiere|le gusta|ama|apasiona|odia|no le gusta)\b/.test(text)) return `${contactId}|preference|${text.slice(0, 80)}`
+
+  const compact = text
+    .split(' ')
+    .filter((token) => token.length > 2 && !['tiene', 'esta', 'para', 'como', 'que', 'con', 'una', 'uno', 'del', 'por'].includes(token))
+    .slice(0, 10)
+    .join('-')
+  return `${contactId}|${category ?? 'other'}|${compact}`
+}
+
 export function nextInsightRunAt(now = new Date()): number {
   const parts = new Intl.DateTimeFormat('en-CA', {
     timeZone: TZ,
@@ -311,6 +346,12 @@ export class DailyInsightRunner {
     let conversationsProcessed = 0
     let outputsWritten = 0
     const counters = emptyCounters()
+    const seenFactKeys = new Set<string>()
+    for (const output of latestAiStagedOutputs(5000)) {
+      if (output.target !== 'contact_fact' || output.status === 'rejected') continue
+      const key = factSemanticKey(output.contact_id, null, output.body ?? '')
+      if (key) seenFactKeys.add(key)
+    }
 
     try {
       const windows = groupWindows(messages)
@@ -386,6 +427,9 @@ export class DailyInsightRunner {
 
         for (const fact of extraction.contact_facts.slice(0, 5)) {
           if (!fact.value?.trim()) continue
+          const semanticFactKey = factSemanticKey(contactId, fact.category, fact.value)
+          if (semanticFactKey && seenFactKeys.has(semanticFactKey)) continue
+          if (semanticFactKey) seenFactKeys.add(semanticFactKey)
           if (fact.needs_review) {
             const payload = {
               title: `Review WhatsApp fact: ${win.chatName ?? win.phone ?? win.chatId}`,
