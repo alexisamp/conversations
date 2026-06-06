@@ -898,6 +898,22 @@ function dismissLocalIdentityIssues(input: {
       WHERE issue_key = ? AND status = 'open'
     `).run(input.contact_id, now, now, issueKey)
   }
+  if (input.waName?.trim()) {
+    db.prepare(`
+      UPDATE sync_issues
+      SET status = 'resolved', contact_id = ?, resolved_at = ?, updated_at = ?
+      WHERE status = 'open'
+        AND kind = 'identity_resolution'
+        AND (title = ? OR title = ? OR chat_key = ?)
+    `).run(
+      input.contact_id,
+      now,
+      now,
+      input.waName.trim(),
+      `Link WhatsApp chat: ${input.waName.trim()}`,
+      `name:${input.waName.trim().toLowerCase()}`,
+    )
+  }
 
   const identifiers = [input.identifier]
   if (!input.identifier.includes('@') && /^\+?\d{7,16}$/.test(input.identifier)) {
@@ -907,8 +923,8 @@ function dismissLocalIdentityIssues(input: {
     db.prepare(`
       UPDATE bridge_messages
       SET contact_id = ?
-      WHERE chat_id = ? OR sender = ? OR sender_phone = ?
-    `).run(input.contact_id, identifier, identifier, input.identifier)
+      WHERE chat_id = ? OR sender = ? OR sender_phone = ? OR chat_name = ?
+    `).run(input.contact_id, identifier, identifier, input.identifier, input.waName)
   }
 }
 

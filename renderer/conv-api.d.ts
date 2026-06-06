@@ -180,6 +180,7 @@ export type CreateFromLiInput = {
 export type SidebarContext =
   | { tab: 'wa'; state: WaState }
   | { tab: 'li'; state: LiState }
+  | { tab: 'ai'; state: { kind: 'review' } }
 
 export type SyncState =
   | 'idle'
@@ -296,6 +297,7 @@ export type ConvApi = {
   sidebar: {
     onContext(cb: (ctx: SidebarContext) => void): void
     toggle(): Promise<void>
+    openAiReview(): Promise<void>
   }
   sync: {
     getStatus(): Promise<SyncStatus>

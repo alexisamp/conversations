@@ -22,7 +22,7 @@ import { loadEnvFile } from './supabase/env'
 import { registerAuthIpc } from './supabase/auth'
 import { registerContactIpc, setLinkedinWebContentsForScrape } from './supabase/contacts'
 import { applyLayout } from './layout'
-import { countPendingAiStagedOutputs, insertMessage, assignMessageToSession, type MessageInput } from './db/local'
+import { countPendingAiStagedOutputs, getDb, insertMessage, assignMessageToSession, type MessageInput } from './db/local'
 import { handleMessage, recoverOpenSessions } from './session-manager'
 import { startSync, stopSync } from './sync/supabase-sync'
 import { createSyncCoordinator, type SyncStatus } from './sync/sync-coordinator'
@@ -51,7 +51,7 @@ const SIDEBAR_DEV_URL = 'http://localhost:5173/'
 const SIDEBAR_PROD_FILE = path.join(__dirname, '../renderer/index.html')
 
 // ─── State ───────────────────────────────────────────────────────────
-type Tab = 'wa' | 'li'
+type Tab = 'wa' | 'li' | 'ai'
 
 let mainWindow: BaseWindow | null = null
 let tabBarView: WebContentsView | null = null
@@ -308,6 +308,7 @@ const TAB_BAR_HTML = `<!doctype html>
     </div>
     <button class="tab active" data-tab="wa"><span class="dot" style="background:#25D366"></span>WhatsApp<span class="shortcut">⌘1</span></button>
     <button class="tab" data-tab="li"><span class="dot" style="background:#0A66C2"></span>LinkedIn<span class="shortcut">⌘2</span></button>
+    <button class="tab" data-tab="ai"><span class="dot" style="background:#7C3AED"></span>AI Review<span class="shortcut">⌘3</span></button>
   </div>
   <script>
     const tabs = document.querySelectorAll('.tab');
@@ -589,11 +590,26 @@ function toggleSearchOverlay(): void {
 // ─── Helpers ─────────────────────────────────────────────────────────
 
 function activeContentView(): WebContentsView | null {
-  return activeTab === 'wa' ? whatsappView : linkedinView
+  if (activeTab === 'wa') return whatsappView
+  if (activeTab === 'li') return linkedinView
+  return sidebarView
 }
 
 function refreshLayout(): void {
   if (!mainWindow || !tabBarView || !whatsappView || !linkedinView || !sidebarView) return
+  if (activeTab === 'ai') {
+    const { width, height } = mainWindow.getContentBounds()
+    const belowTabs = Math.max(0, height - 38)
+    tabBarView.setBounds({ x: 0, y: 0, width, height: 38 })
+    tabBarView.setVisible(true)
+    whatsappView.setBounds({ x: 0, y: 0, width: 0, height: 0 })
+    whatsappView.setVisible(false)
+    linkedinView.setBounds({ x: 0, y: 0, width: 0, height: 0 })
+    linkedinView.setVisible(false)
+    sidebarView.setBounds({ x: 0, y: 38, width, height: belowTabs })
+    sidebarView.setVisible(true)
+    return
+  }
   const active = activeTab === 'wa' ? whatsappView : linkedinView
   const inactive = activeTab === 'wa' ? [linkedinView] : [whatsappView]
   applyLayout({
@@ -617,8 +633,12 @@ function switchTab(next: Tab): void {
   refreshLayout()
   tabBarView?.webContents.send('tab:active-changed', activeTab)
   // Re-emit the context for the newly active tab
-  const context = activeTab === 'wa' ? waContext : liContext
-  sidebarView?.webContents.send('sidebar:context', { tab: activeTab, state: context })
+  if (activeTab === 'ai') {
+    sidebarView?.webContents.send('sidebar:context', { tab: 'ai', state: { kind: 'review' } })
+  } else {
+    const context = activeTab === 'wa' ? waContext : liContext
+    sidebarView?.webContents.send('sidebar:context', { tab: activeTab, state: context })
+  }
 }
 
 async function combinedSyncStatus(base?: SyncStatus): Promise<SyncStatus> {
@@ -744,14 +764,46 @@ async function linkBridgeChatToContact(input: {
   try {
     const supabase = getSupabase()
     const identifier = input.phone || `jid:${input.chat_id}`
-    const { error } = await supabase.from('contact_channels').insert({
-      outreach_log_id: input.contact_id,
-      channel: 'whatsapp',
-      channel_identifier: identifier,
-      channel_name: input.wa_name,
-      verified: true,
-    })
-    if (error && error.code !== '23505') return { ok: false, error: error.message }
+    const { data: existing } = await supabase
+      .from('contact_channels')
+      .select('outreach_log_id')
+      .eq('channel', 'whatsapp')
+      .eq('channel_identifier', identifier)
+      .maybeSingle()
+    if (existing && existing.outreach_log_id !== input.contact_id) {
+      return { ok: false, error: 'This WhatsApp chat is already linked to another contact.' }
+    }
+    if (!existing) {
+      const { error } = await supabase.from('contact_channels').insert({
+        outreach_log_id: input.contact_id,
+        channel: 'whatsapp',
+        channel_identifier: identifier,
+        channel_name: input.wa_name,
+        verified: true,
+      })
+      if (error && error.code !== '23505') return { ok: false, error: error.message }
+    }
+
+    const now = Date.now()
+    getDb().prepare(`
+      UPDATE sync_issues
+      SET status = 'resolved', contact_id = ?, resolved_at = ?, updated_at = ?
+      WHERE status = 'open'
+        AND kind = 'identity_resolution'
+        AND (issue_key = ? OR chat_key = ? OR title = ?)
+    `).run(
+      input.contact_id,
+      now,
+      now,
+      `bridge-identity:${input.chat_id}`,
+      input.chat_id,
+      input.wa_name ?? input.phone ?? input.chat_id,
+    )
+    getDb().prepare(`
+      UPDATE bridge_messages
+      SET contact_id = ?
+      WHERE chat_id = ? OR chat_name = ?
+    `).run(input.contact_id, input.chat_id, input.wa_name)
 
     await insightRunner?.runChat(input.chat_id)
     phoneContactIdCache.clear()
@@ -843,6 +895,11 @@ function buildMenu(): void {
           label: 'LinkedIn',
           accelerator: 'CmdOrCtrl+2',
           click: () => switchTab('li'),
+        },
+        {
+          label: 'AI Review',
+          accelerator: 'CmdOrCtrl+3',
+          click: () => switchTab('ai'),
         },
         { type: 'separator' },
         {
@@ -1603,6 +1660,7 @@ function wireUpdaterEvents(): void {
 
 function registerIpc(): void {
   ipcMain.handle('sidebar:toggle', () => toggleSidebar())
+  ipcMain.handle('tab:switch-ai', () => switchTab('ai'))
   ipcMain.handle('sync:get-status', () => combinedSyncStatus())
   ipcMain.handle('sync:list-issues', () => syncCoordinator?.listIssues() ?? [])
   ipcMain.handle('sync:run-active-chat', async () => {
@@ -1760,7 +1818,7 @@ function registerIpc(): void {
 
   // Tab bar → switch tab
   ipcMain.on('tab:switch', (_event, next: Tab) => {
-    if (next === 'wa' || next === 'li') switchTab(next)
+    if (next === 'wa' || next === 'li' || next === 'ai') switchTab(next)
   })
 
   // Tab bar → navigate the active content view
@@ -1780,6 +1838,7 @@ function registerIpc(): void {
     activeContentView()?.webContents.reload()
   })
   ipcMain.on('tab:home', () => {
+    if (activeTab === 'ai') return
     const url = activeTab === 'wa' ? WHATSAPP_URL : LINKEDIN_URL
     activeContentView()?.webContents.loadURL(url).catch(() => {})
   })

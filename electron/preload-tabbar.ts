@@ -5,7 +5,7 @@
 import { contextBridge, ipcRenderer } from 'electron'
 
 const api = {
-  switchTab: (name: 'wa' | 'li'): void => {
+  switchTab: (name: 'wa' | 'li' | 'ai'): void => {
     ipcRenderer.send('tab:switch', name)
   },
   back: (): void => {
@@ -20,8 +20,8 @@ const api = {
   home: (): void => {
     ipcRenderer.send('tab:home')
   },
-  onActiveChanged: (cb: (name: 'wa' | 'li') => void): void => {
-    ipcRenderer.on('tab:active-changed', (_event, name: 'wa' | 'li') => cb(name))
+  onActiveChanged: (cb: (name: 'wa' | 'li' | 'ai') => void): void => {
+    ipcRenderer.on('tab:active-changed', (_event, name: 'wa' | 'li' | 'ai') => cb(name))
   },
 }
 

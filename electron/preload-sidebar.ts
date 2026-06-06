@@ -176,6 +176,7 @@ export type CreateFromLiInput = {
 export type SidebarContext =
   | { tab: 'wa'; state: WaState }
   | { tab: 'li'; state: LiState }
+  | { tab: 'ai'; state: { kind: 'review' } }
 
 export type SyncState =
   | 'idle'
@@ -311,6 +312,7 @@ const api = {
       )
     },
     toggle: (): Promise<void> => ipcRenderer.invoke('sidebar:toggle'),
+    openAiReview: (): Promise<void> => ipcRenderer.invoke('tab:switch-ai'),
   },
   sync: {
     getStatus: (): Promise<SyncStatus> => ipcRenderer.invoke('sync:get-status'),
