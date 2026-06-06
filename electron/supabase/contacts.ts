@@ -8,6 +8,7 @@ import { phoneVariants } from '../utils/phone'
 import { linkedinSlug, linkedinUrlVariants } from '../utils/linkedin'
 import { uploadCompanyLogo, uploadLinkedInPhoto } from './photo-upload'
 import { scrapeLinkedInCompanyInView } from '../scrape-company'
+import { getDb } from '../db/local'
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -828,6 +829,89 @@ async function searchContactsByName(query: string, limit = 8): Promise<ContactBr
 
 // ─── Create + attach existing ────────────────────────────────────────────────
 
+async function ensureWhatsappChannel(input: {
+  contact_id: string
+  identifier: string
+  waName: string | null
+}): Promise<WriteResult> {
+  const supabase = getSupabase()
+  const { data: existing, error: lookupError } = await supabase
+    .from('contact_channels')
+    .select('outreach_log_id')
+    .eq('channel', 'whatsapp')
+    .eq('channel_identifier', input.identifier)
+    .maybeSingle()
+  if (lookupError) return { ok: false, error: lookupError.message }
+  if (existing) {
+    if ((existing.outreach_log_id as string) === input.contact_id) {
+      dismissLocalIdentityIssues(input)
+      return { ok: true }
+    }
+    return {
+      ok: false,
+      error: 'This WhatsApp identifier is already linked to another reThink contact.',
+    }
+  }
+
+  const { error } = await supabase.from('contact_channels').insert({
+    outreach_log_id: input.contact_id,
+    channel: 'whatsapp',
+    channel_identifier: input.identifier,
+    channel_name: input.waName,
+    verified: true,
+  })
+  if (error) {
+    if (error.code === '23505') {
+      dismissLocalIdentityIssues(input)
+      return { ok: true }
+    }
+    console.error('[contacts] attach whatsapp channel failed:', error)
+    return { ok: false, error: error.message }
+  }
+  dismissLocalIdentityIssues(input)
+  return { ok: true }
+}
+
+function dismissLocalIdentityIssues(input: {
+  contact_id: string
+  identifier: string
+  waName: string | null
+}): void {
+  const now = Date.now()
+  const db = getDb()
+  const issueKeys = new Set<string>()
+  if (input.waName?.trim()) {
+    issueKeys.add(`identity:name:${input.waName.trim().toLowerCase()}`)
+  }
+  if (input.identifier.startsWith('lid:')) {
+    issueKeys.add(`identity:lid:${input.identifier.slice(4)}`)
+  } else if (input.identifier.startsWith('waname:')) {
+    issueKeys.add(`identity:name:${input.identifier.slice(7).trim().toLowerCase()}`)
+  } else if (input.identifier.includes('@')) {
+    issueKeys.add(`bridge-identity:${input.identifier}`)
+  }
+
+  for (const issueKey of issueKeys) {
+    db.prepare(`
+      UPDATE sync_issues
+      SET status = 'resolved', contact_id = ?, resolved_at = ?, updated_at = ?
+      WHERE issue_key = ? AND status = 'open'
+    `).run(input.contact_id, now, now, issueKey)
+  }
+
+  const identifiers = [input.identifier]
+  if (!input.identifier.includes('@') && /^\+?\d{7,16}$/.test(input.identifier)) {
+    identifiers.push(input.identifier.replace(/^\+/, '') + '@s.whatsapp.net')
+  }
+  for (const identifier of identifiers) {
+    db.prepare(`
+      UPDATE bridge_messages
+      SET contact_id = ?
+      WHERE chat_id = ? OR sender = ? OR sender_phone = ?
+    `).run(input.contact_id, identifier, identifier, input.identifier)
+  }
+}
+
 async function createContactFromParticipant(
   input: CreateContactInput,
 ): Promise<CreateContactResult> {
@@ -927,19 +1011,11 @@ async function attachPhoneToExistingContact(input: {
   phone: string
   waName: string | null
 }): Promise<WriteResult> {
-  const supabase = getSupabase()
-  const { error } = await supabase.from('contact_channels').insert({
-    outreach_log_id: input.contact_id,
-    channel: 'whatsapp',
-    channel_identifier: input.phone,
-    channel_name: input.waName,
-    verified: true,
+  return ensureWhatsappChannel({
+    contact_id: input.contact_id,
+    identifier: input.phone,
+    waName: input.waName,
   })
-  if (error) {
-    console.error('[contacts] attachPhone failed:', error)
-    return { ok: false, error: error.message }
-  }
-  return { ok: true }
 }
 
 /**
@@ -1330,18 +1406,11 @@ async function attachLidToExistingContact(input: {
   // only expose a Linked ID and not a phone number.
   const supabase = getSupabase()
   const storedIdentifier = 'lid:' + input.lid
-  const { error } = await supabase.from('contact_channels').insert({
-    outreach_log_id: input.contact_id,
-    channel: 'whatsapp',
-    channel_identifier: storedIdentifier,
-    channel_name: input.waName,
-    verified: true,
+  return ensureWhatsappChannel({
+    contact_id: input.contact_id,
+    identifier: storedIdentifier,
+    waName: input.waName,
   })
-  if (error) {
-    console.error('[contacts] attachLid failed:', error)
-    return { ok: false, error: error.message }
-  }
-  return { ok: true }
 }
 
 async function attachWaNameToExistingContact(input: {
@@ -1353,20 +1422,12 @@ async function attachWaNameToExistingContact(input: {
   // This is the map-once-forever mechanism for SAVED contacts whose WA
   // display name doesn't match their reThink name (WA's 2026-04 DOM update
   // removed phone numbers from the message stream, so name is all we have).
-  const supabase = getSupabase()
   const storedIdentifier = 'waname:' + input.waName.trim()
-  const { error } = await supabase.from('contact_channels').insert({
-    outreach_log_id: input.contact_id,
-    channel: 'whatsapp',
-    channel_identifier: storedIdentifier,
-    channel_name: input.waName,
-    verified: true,
+  return ensureWhatsappChannel({
+    contact_id: input.contact_id,
+    identifier: storedIdentifier,
+    waName: input.waName,
   })
-  if (error) {
-    console.error('[contacts] attachWaName failed:', error)
-    return { ok: false, error: error.message }
-  }
-  return { ok: true }
 }
 
 // ─── IPC registration ────────────────────────────────────────────────────────

@@ -63,6 +63,11 @@ CREATE TABLE IF NOT EXISTS daily_ai_runs (
   messages_seen            INTEGER NOT NULL DEFAULT 0,
   conversations_processed  INTEGER NOT NULL DEFAULT 0,
   outputs_written          INTEGER NOT NULL DEFAULT 0,
+  interactions_written     INTEGER NOT NULL DEFAULT 0,
+  contact_facts_written    INTEGER NOT NULL DEFAULT 0,
+  value_logs_written       INTEGER NOT NULL DEFAULT 0,
+  todos_written            INTEGER NOT NULL DEFAULT 0,
+  review_items_written     INTEGER NOT NULL DEFAULT 0,
   error                    TEXT,
   created_at               INTEGER NOT NULL DEFAULT (unixepoch() * 1000),
   finished_at              INTEGER
@@ -76,6 +81,42 @@ CREATE TABLE IF NOT EXISTS ai_output_dedupe (
   supabase_id  TEXT,
   created_at   INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
 );
+
+CREATE TABLE IF NOT EXISTS ai_run_outputs (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id       INTEGER NOT NULL REFERENCES daily_ai_runs(id) ON DELETE CASCADE,
+  source_key   TEXT NOT NULL,
+  target       TEXT NOT NULL CHECK (target IN ('interaction','contact_fact','value_log','todo','review_item')),
+  contact_id   TEXT,
+  supabase_id  TEXT,
+  label        TEXT,
+  created_at   INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
+);
+CREATE INDEX IF NOT EXISTS idx_ai_run_outputs_run ON ai_run_outputs(run_id, target);
+CREATE INDEX IF NOT EXISTS idx_ai_run_outputs_contact ON ai_run_outputs(contact_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS ai_staged_outputs (
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id            INTEGER REFERENCES daily_ai_runs(id) ON DELETE SET NULL,
+  dedupe_key        TEXT NOT NULL UNIQUE,
+  source_key        TEXT NOT NULL,
+  target            TEXT NOT NULL CHECK (target IN ('interaction','contact_fact','value_log','todo','review_item')),
+  contact_id        TEXT,
+  interaction_date  TEXT,
+  title             TEXT,
+  body              TEXT,
+  payload_json      TEXT NOT NULL,
+  status            TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','approved','rejected','synced','failed')),
+  supabase_id       TEXT,
+  error             TEXT,
+  created_at        INTEGER NOT NULL DEFAULT (unixepoch() * 1000),
+  updated_at        INTEGER NOT NULL DEFAULT (unixepoch() * 1000),
+  confirmed_at      INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_ai_staged_outputs_status
+  ON ai_staged_outputs(status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_ai_staged_outputs_contact
+  ON ai_staged_outputs(contact_id, interaction_date DESC);
 
 -- One row per 6h sliding-window conversation session.
 CREATE TABLE IF NOT EXISTS sessions (

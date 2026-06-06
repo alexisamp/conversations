@@ -211,9 +211,31 @@ export type DailyAiRun = {
   messages_seen: number
   conversations_processed: number
   outputs_written: number
+  interactions_written: number
+  contact_facts_written: number
+  value_logs_written: number
+  todos_written: number
+  review_items_written: number
   error: string | null
   created_at: number
   finished_at: number | null
+}
+
+export type AiStagedOutput = {
+  id: number
+  run_id: number | null
+  source_key: string
+  target: 'interaction' | 'contact_fact' | 'value_log' | 'todo' | 'review_item'
+  contact_id: string | null
+  interaction_date: string | null
+  title: string | null
+  body: string | null
+  status: 'pending' | 'approved' | 'rejected' | 'synced' | 'failed'
+  supabase_id: string | null
+  error: string | null
+  created_at: number
+  updated_at: number
+  confirmed_at: number | null
 }
 
 export type SyncStatus = {
@@ -228,6 +250,7 @@ export type SyncStatus = {
   bridgeStatus?: WhatsappBridgeStatus
   lastInsightRun?: DailyAiRun | null
   nextInsightRunAt?: number | null
+  pendingInsightOutputs?: number
   error?: string
 }
 
@@ -302,7 +325,17 @@ export type ConvApi = {
       conversationsProcessed: number
       outputsWritten: number
     }>
+    repairStructured(): Promise<{
+      runId: number
+      messagesSeen: number
+      conversationsProcessed: number
+      outputsWritten: number
+    }>
     getLastRuns(): Promise<DailyAiRun[]>
+    getStagedOutputs(): Promise<AiStagedOutput[]>
+    updateStagedOutput(id: number, body: string): Promise<AiStagedOutput | null>
+    approveStagedOutput(id: number): Promise<{ ok: true } | { ok: false; error: string }>
+    approvePendingStagedOutputs(): Promise<{ ok: true; synced: number; failed: number }>
   }
   identity: {
     linkChatToContact(input: {

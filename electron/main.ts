@@ -22,7 +22,7 @@ import { loadEnvFile } from './supabase/env'
 import { registerAuthIpc } from './supabase/auth'
 import { registerContactIpc, setLinkedinWebContentsForScrape } from './supabase/contacts'
 import { applyLayout } from './layout'
-import { insertMessage, assignMessageToSession, type MessageInput } from './db/local'
+import { countPendingAiStagedOutputs, insertMessage, assignMessageToSession, type MessageInput } from './db/local'
 import { handleMessage, recoverOpenSessions } from './session-manager'
 import { startSync, stopSync } from './sync/supabase-sync'
 import { createSyncCoordinator, type SyncStatus } from './sync/sync-coordinator'
@@ -633,11 +633,21 @@ async function combinedSyncStatus(base?: SyncStatus): Promise<SyncStatus> {
     issueCount: 0,
   }
   const bridgeStatus = await whatsappBridge.getStatus()
+  const pendingInsightOutputs = countPendingAiStagedOutputs()
+  const visibleStatus = pendingInsightOutputs > 0 && status.state === 'up_to_date'
+    ? {
+        ...status,
+        state: 'insight_pending',
+        label: 'Insight pending',
+        detail: `${pendingInsightOutputs} AI proposals waiting for review`,
+      }
+    : status
   return {
-    ...status,
+    ...visibleStatus,
     bridgeStatus,
     lastInsightRun: insightRunner?.getLastRuns(1)[0] ?? null,
     nextInsightRunAt: insightRunner?.getNextRunAt() ?? nextInsightRunAt(),
+    pendingInsightOutputs,
   } as SyncStatus
 }
 
@@ -1618,7 +1628,26 @@ function registerIpc(): void {
     publishSyncStatus()
     return result
   })
+  ipcMain.handle('insights:repair-structured', async () => {
+    if (!insightRunner) throw new Error('Insight runner not ready')
+    const result = await insightRunner.repairStructuredOutputs()
+    publishSyncStatus()
+    return result
+  })
   ipcMain.handle('insights:get-last-runs', () => insightRunner?.getLastRuns(10) ?? [])
+  ipcMain.handle('insights:get-staged-outputs', () => insightRunner?.getStagedOutputs(500) ?? [])
+  ipcMain.handle('insights:update-staged-output', (_event, id: number, body: string) => {
+    if (!insightRunner) throw new Error('Insight runner not ready')
+    return insightRunner.updateStagedOutput(id, body)
+  })
+  ipcMain.handle('insights:approve-staged-output', async (_event, id: number) => {
+    if (!insightRunner) throw new Error('Insight runner not ready')
+    return insightRunner.approveStagedOutput(id)
+  })
+  ipcMain.handle('insights:approve-pending-staged-outputs', async () => {
+    if (!insightRunner) throw new Error('Insight runner not ready')
+    return insightRunner.approvePendingStagedOutputs()
+  })
   ipcMain.handle('identity:link-chat-to-contact', (_event, input: {
     chat_id: string
     contact_id: string

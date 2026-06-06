@@ -4,7 +4,14 @@ import { GroupScreen } from './GroupScreen'
 import { LinkedinProfileScreen } from './LinkedinProfileScreen'
 import { MapParticipantModal } from './MapParticipantModal'
 import { SettingsScreen } from './SettingsScreen'
-import type { ContactDetail, GroupParticipant, SidebarContext, SyncIssue, SyncStatus } from '../conv-api'
+import type {
+  AiStagedOutput,
+  ContactDetail,
+  GroupParticipant,
+  SidebarContext,
+  SyncIssue,
+  SyncStatus,
+} from '../conv-api'
 
 type PersonLookupState =
   | { kind: 'idle' }
@@ -30,7 +37,9 @@ export function MainScreen({ email }: { email: string }) {
     issueCount: 0,
   })
   const [syncIssues, setSyncIssues] = useState<SyncIssue[]>([])
+  const [stagedOutputs, setStagedOutputs] = useState<AiStagedOutput[]>([])
   const [syncDrawerOpen, setSyncDrawerOpen] = useState(false)
+  const [aiReviewOpen, setAiReviewOpen] = useState(false)
   const [syncBusy, setSyncBusy] = useState(false)
   const [resolvingIssue, setResolvingIssue] = useState<SyncIssue | null>(null)
   const [personLookup, setPersonLookup] = useState<PersonLookupState>({ kind: 'idle' })
@@ -78,12 +87,14 @@ export function MainScreen({ email }: { email: string }) {
   }, [runPersonLookup])
 
   const refreshSync = useCallback(async () => {
-    const [status, issues] = await Promise.all([
+    const [status, issues, outputs] = await Promise.all([
       window.conv.sync.getStatus(),
       window.conv.sync.listIssues(),
+      window.conv.insights.getStagedOutputs(),
     ])
     setSyncStatus(status)
     setSyncIssues(issues)
+    setStagedOutputs(outputs)
   }, [])
 
   useEffect(() => {
@@ -91,6 +102,7 @@ export function MainScreen({ email }: { email: string }) {
     const unsubscribe = window.conv.sync.onStatus((status) => {
       setSyncStatus(status)
       void window.conv.sync.listIssues().then(setSyncIssues)
+      void window.conv.insights.getStagedOutputs().then(setStagedOutputs)
     })
     return unsubscribe
   }, [refreshSync])
@@ -130,6 +142,43 @@ export function MainScreen({ email }: { email: string }) {
     } finally {
       setSyncBusy(false)
     }
+  }
+
+  async function repairStructuredInsights() {
+    setSyncBusy(true)
+    try {
+      await window.conv.insights.repairStructured()
+      await refreshSync()
+    } finally {
+      setSyncBusy(false)
+    }
+  }
+
+  async function approveAllStagedOutputs() {
+    setSyncBusy(true)
+    try {
+      await window.conv.insights.approvePendingStagedOutputs()
+      await refreshSync()
+      if (lastHitPhoneRef.current) await handleRefresh()
+    } finally {
+      setSyncBusy(false)
+    }
+  }
+
+  async function approveStagedOutput(id: number) {
+    setSyncBusy(true)
+    try {
+      await window.conv.insights.approveStagedOutput(id)
+      await refreshSync()
+      if (lastHitPhoneRef.current) await handleRefresh()
+    } finally {
+      setSyncBusy(false)
+    }
+  }
+
+  async function updateStagedOutput(id: number, body: string) {
+    await window.conv.insights.updateStagedOutput(id, body)
+    await refreshSync()
   }
 
   async function retryFailed() {
@@ -229,15 +278,29 @@ export function MainScreen({ email }: { email: string }) {
         <SyncDrawer
           status={syncStatus}
           issues={syncIssues}
+          stagedOutputs={stagedOutputs}
           busy={syncBusy}
           onClose={() => setSyncDrawerOpen(false)}
           onRunCatchUp={runCatchUp}
           onRunActive={runActiveSync}
           onRunInsights={runInsights}
+          onRepairStructured={repairStructuredInsights}
           onRetryFailed={retryFailed}
           onOpenBridgePairing={openBridgePairing}
           onResolveIssue={setResolvingIssue}
           onDismissIssue={dismissSyncIssue}
+          onOpenAiReview={() => setAiReviewOpen(true)}
+        />
+      )}
+      {aiReviewOpen && (
+        <AiReviewTable
+          outputs={stagedOutputs}
+          busy={syncBusy}
+          onClose={() => setAiReviewOpen(false)}
+          onRefresh={refreshSync}
+          onUpdate={updateStagedOutput}
+          onApprove={approveStagedOutput}
+          onApproveAll={approveAllStagedOutputs}
         />
       )}
       {resolvingIssue && (
@@ -294,31 +357,38 @@ function SyncStatusBar({
 function SyncDrawer({
   status,
   issues,
+  stagedOutputs,
   busy,
   onClose,
   onRunCatchUp,
   onRunActive,
   onRunInsights,
+  onRepairStructured,
   onRetryFailed,
   onOpenBridgePairing,
   onResolveIssue,
   onDismissIssue,
+  onOpenAiReview,
 }: {
   status: SyncStatus
   issues: SyncIssue[]
+  stagedOutputs: AiStagedOutput[]
   busy: boolean
   onClose: () => void
   onRunCatchUp: () => void
   onRunActive: () => void
   onRunInsights: () => void
+  onRepairStructured: () => void
   onRetryFailed: () => void
   onOpenBridgePairing: () => void
   onResolveIssue: (issue: SyncIssue) => void
   onDismissIssue: (issueKey: string) => void
+  onOpenAiReview: () => void
 }) {
   const identityIssues = issues.filter((issue) => issue.kind === 'identity_resolution')
   const errorIssues = issues.filter((issue) => issue.kind === 'sync_error')
   const historyIssues = issues.filter((issue) => issue.kind === 'history_import')
+  const pendingOutputs = stagedOutputs.filter((output) => output.status === 'pending' || output.status === 'failed')
   const bridge = status.bridgeStatus
 
   return (
@@ -353,7 +423,11 @@ function SyncDrawer({
             <span>bridge today</span>
           </div>
           <div>
-            <strong>{status.lastInsightRun ? formatSyncAgo(status.lastInsightRun.created_at) : 'never'}</strong>
+            <strong>{pendingOutputs.length}</strong>
+            <span>AI review</span>
+          </div>
+          <div>
+            <strong>{status.lastInsightRun ? formatAiRunCounts(status.lastInsightRun) : 'never'}</strong>
             <span>last AI</span>
           </div>
           <div>
@@ -383,7 +457,13 @@ function SyncDrawer({
             Sync active chat
           </button>
           <button className="ghost" disabled={busy || status.state === 'scanning'} onClick={onRunInsights}>
-            Run AI now
+            Analyze new
+          </button>
+          <button className="ghost" disabled={busy || status.state === 'scanning'} onClick={onRepairStructured}>
+            Repair structured
+          </button>
+          <button className="ghost" disabled={busy} onClick={onOpenAiReview}>
+            Review AI table
           </button>
           <button className="ghost" disabled={busy || status.state === 'scanning'} onClick={onRetryFailed}>
             Retry failed
@@ -463,6 +543,110 @@ function SyncIssueGroup({
   )
 }
 
+function AiReviewTable({
+  outputs,
+  busy,
+  onClose,
+  onRefresh,
+  onUpdate,
+  onApprove,
+  onApproveAll,
+}: {
+  outputs: AiStagedOutput[]
+  busy: boolean
+  onClose: () => void
+  onRefresh: () => void
+  onUpdate: (id: number, body: string) => Promise<void>
+  onApprove: (id: number) => Promise<void>
+  onApproveAll: () => Promise<void>
+}) {
+  const [editing, setEditing] = useState<Record<number, string>>({})
+  const visible = outputs.filter((output) => output.status !== 'rejected')
+  const pending = visible.filter((output) => output.status === 'pending' || output.status === 'failed')
+
+  return (
+    <div className="ai-review-backdrop">
+      <section className="ai-review">
+        <header className="ai-review-header">
+          <div>
+            <div className="sync-drawer-eyebrow">AI proposals</div>
+            <h2>Review before reThink</h2>
+            <p>{pending.length} pending rows. Edit text, then approve what should enter the database.</p>
+          </div>
+          <div className="ai-review-actions">
+            <button className="ghost" onClick={onRefresh} disabled={busy}>Refresh</button>
+            <button className="primary" onClick={onApproveAll} disabled={busy || pending.length === 0}>
+              Approve pending
+            </button>
+            <button className="icon-button" onClick={onClose} aria-label="Close AI review">×</button>
+          </div>
+        </header>
+        <div className="ai-review-table-wrap">
+          <table className="ai-review-table">
+            <thead>
+              <tr>
+                <th>Contact</th>
+                <th>Date</th>
+                <th>reThink column</th>
+                <th>AI proposal</th>
+                <th>Status</th>
+                <th />
+              </tr>
+            </thead>
+            <tbody>
+              {visible.length === 0 ? (
+                <tr>
+                  <td colSpan={6} className="ai-review-empty">No AI proposals yet.</td>
+                </tr>
+              ) : (
+                visible.map((output) => {
+                  const draft = editing[output.id] ?? output.body ?? ''
+                  return (
+                    <tr key={output.id} className={`ai-row-${output.status}`}>
+                      <td>
+                        <strong>{output.title ?? 'Unknown contact'}</strong>
+                        <span>{shortId(output.contact_id)}</span>
+                      </td>
+                      <td>{output.interaction_date ?? 'n/a'}</td>
+                      <td><code>{targetLabel(output.target)}</code></td>
+                      <td>
+                        <textarea
+                          value={draft}
+                          disabled={output.status === 'synced'}
+                          onChange={(event) =>
+                            setEditing((current) => ({ ...current, [output.id]: event.target.value }))
+                          }
+                          onBlur={() => {
+                            if (draft !== (output.body ?? '')) void onUpdate(output.id, draft)
+                          }}
+                        />
+                        {output.error && <div className="ai-review-error">{output.error}</div>}
+                      </td>
+                      <td>{output.status}</td>
+                      <td>
+                        <button
+                          className="ghost"
+                          disabled={busy || output.status === 'synced'}
+                          onClick={async () => {
+                            if (draft !== (output.body ?? '')) await onUpdate(output.id, draft)
+                            await onApprove(output.id)
+                          }}
+                        >
+                          Approve
+                        </button>
+                      </td>
+                    </tr>
+                  )
+                })
+              )}
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+  )
+}
+
 function formatSyncAgo(timestamp: number) {
   const minutes = Math.max(0, Math.round((Date.now() - timestamp) / 60000))
   if (minutes < 1) return 'now'
@@ -477,6 +661,30 @@ function formatClock(timestamp: number) {
     hour: 'numeric',
     minute: '2-digit',
   }).format(new Date(timestamp))
+}
+
+function formatAiRunCounts(run: SyncStatus['lastInsightRun']) {
+  if (!run) return 'never'
+  const parts = [
+    run.interactions_written ? `${run.interactions_written} act` : null,
+    run.contact_facts_written ? `${run.contact_facts_written} facts` : null,
+    run.value_logs_written ? `${run.value_logs_written} value` : null,
+    run.todos_written ? `${run.todos_written} todos` : null,
+    run.review_items_written ? `${run.review_items_written} review` : null,
+  ].filter(Boolean)
+  return parts.length ? parts.join(' / ') : formatSyncAgo(run.created_at)
+}
+
+function targetLabel(target: AiStagedOutput['target']) {
+  if (target === 'interaction') return 'interactions'
+  if (target === 'contact_fact') return 'contact_facts'
+  if (target === 'value_log') return 'value_logs'
+  if (target === 'todo') return 'todos'
+  return 'review_items'
+}
+
+function shortId(id: string | null) {
+  return id ? id.slice(0, 8) : 'unlinked'
 }
 
 function issuePhone(issue: SyncIssue): string | null {

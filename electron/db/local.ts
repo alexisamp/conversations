@@ -116,6 +116,53 @@ function migrateLocalSchema(handle: Database.Database): void {
   if (!hasColumn(handle, 'bridge_messages', 'contact_id')) {
     handle.prepare('ALTER TABLE bridge_messages ADD COLUMN contact_id TEXT').run()
   }
+  for (const [column, type] of [
+    ['interactions_written', 'INTEGER NOT NULL DEFAULT 0'],
+    ['contact_facts_written', 'INTEGER NOT NULL DEFAULT 0'],
+    ['value_logs_written', 'INTEGER NOT NULL DEFAULT 0'],
+    ['todos_written', 'INTEGER NOT NULL DEFAULT 0'],
+    ['review_items_written', 'INTEGER NOT NULL DEFAULT 0'],
+  ] as const) {
+    if (!hasColumn(handle, 'daily_ai_runs', column)) {
+      handle.prepare(`ALTER TABLE daily_ai_runs ADD COLUMN ${column} ${type}`).run()
+    }
+  }
+  handle.prepare(`
+    CREATE TABLE IF NOT EXISTS ai_run_outputs (
+      id           INTEGER PRIMARY KEY AUTOINCREMENT,
+      run_id       INTEGER NOT NULL REFERENCES daily_ai_runs(id) ON DELETE CASCADE,
+      source_key   TEXT NOT NULL,
+      target       TEXT NOT NULL CHECK (target IN ('interaction','contact_fact','value_log','todo','review_item')),
+      contact_id   TEXT,
+      supabase_id  TEXT,
+      label        TEXT,
+      created_at   INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
+    )
+  `).run()
+  handle.prepare('CREATE INDEX IF NOT EXISTS idx_ai_run_outputs_run ON ai_run_outputs(run_id, target)').run()
+  handle.prepare('CREATE INDEX IF NOT EXISTS idx_ai_run_outputs_contact ON ai_run_outputs(contact_id, created_at DESC)').run()
+  handle.prepare(`
+    CREATE TABLE IF NOT EXISTS ai_staged_outputs (
+      id                INTEGER PRIMARY KEY AUTOINCREMENT,
+      run_id            INTEGER REFERENCES daily_ai_runs(id) ON DELETE SET NULL,
+      dedupe_key        TEXT NOT NULL UNIQUE,
+      source_key        TEXT NOT NULL,
+      target            TEXT NOT NULL CHECK (target IN ('interaction','contact_fact','value_log','todo','review_item')),
+      contact_id        TEXT,
+      interaction_date  TEXT,
+      title             TEXT,
+      body              TEXT,
+      payload_json      TEXT NOT NULL,
+      status            TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','approved','rejected','synced','failed')),
+      supabase_id       TEXT,
+      error             TEXT,
+      created_at        INTEGER NOT NULL DEFAULT (unixepoch() * 1000),
+      updated_at        INTEGER NOT NULL DEFAULT (unixepoch() * 1000),
+      confirmed_at      INTEGER
+    )
+  `).run()
+  handle.prepare('CREATE INDEX IF NOT EXISTS idx_ai_staged_outputs_status ON ai_staged_outputs(status, created_at DESC)').run()
+  handle.prepare('CREATE INDEX IF NOT EXISTS idx_ai_staged_outputs_contact ON ai_staged_outputs(contact_id, interaction_date DESC)').run()
 }
 
 // ─── Messages ────────────────────────────────────────────────────────
@@ -198,6 +245,19 @@ export function bridgeMessagesForRange(startMs: number, endMs: number): BridgeMe
     .all(startMs, endMs) as BridgeMessageRow[]
 }
 
+export function bridgeMessagesForStructuredRepair(startMs: number, endMs: number): BridgeMessageRow[] {
+  return getDb()
+    .prepare(`
+      SELECT * FROM bridge_messages
+      WHERE chat_kind = 'person'
+        AND timestamp_ms >= ?
+        AND timestamp_ms <= ?
+        AND contact_id IS NOT NULL
+      ORDER BY chat_id ASC, timestamp_ms ASC
+    `)
+    .all(startMs, endMs) as BridgeMessageRow[]
+}
+
 export function bridgeMessagesForChat(chatId: string): BridgeMessageRow[] {
   return getDb()
     .prepare(`
@@ -253,9 +313,44 @@ export type DailyAiRunRow = {
   messages_seen: number
   conversations_processed: number
   outputs_written: number
+  interactions_written: number
+  contact_facts_written: number
+  value_logs_written: number
+  todos_written: number
+  review_items_written: number
   error: string | null
   created_at: number
   finished_at: number | null
+}
+
+export type AiRunOutputRow = {
+  id: number
+  run_id: number
+  source_key: string
+  target: 'interaction' | 'contact_fact' | 'value_log' | 'todo' | 'review_item'
+  contact_id: string | null
+  supabase_id: string | null
+  label: string | null
+  created_at: number
+}
+
+export type AiStagedOutputRow = {
+  id: number
+  run_id: number | null
+  dedupe_key: string
+  source_key: string
+  target: 'interaction' | 'contact_fact' | 'value_log' | 'todo' | 'review_item'
+  contact_id: string | null
+  interaction_date: string | null
+  title: string | null
+  body: string | null
+  payload_json: string
+  status: 'pending' | 'approved' | 'rejected' | 'synced' | 'failed'
+  supabase_id: string | null
+  error: string | null
+  created_at: number
+  updated_at: number
+  confirmed_at: number | null
 }
 
 export function createDailyAiRun(input: {
@@ -279,6 +374,11 @@ export function finishDailyAiRun(
     messages_seen: number
     conversations_processed: number
     outputs_written: number
+    interactions_written?: number
+    contact_facts_written?: number
+    value_logs_written?: number
+    todos_written?: number
+    review_items_written?: number
     error?: string | null
   },
 ): void {
@@ -286,6 +386,8 @@ export function finishDailyAiRun(
     .prepare(`
       UPDATE daily_ai_runs
       SET status = ?, messages_seen = ?, conversations_processed = ?, outputs_written = ?,
+          interactions_written = ?, contact_facts_written = ?, value_logs_written = ?,
+          todos_written = ?, review_items_written = ?,
           error = ?, finished_at = ?
       WHERE id = ?
     `)
@@ -294,6 +396,11 @@ export function finishDailyAiRun(
       input.messages_seen,
       input.conversations_processed,
       input.outputs_written,
+      input.interactions_written ?? 0,
+      input.contact_facts_written ?? 0,
+      input.value_logs_written ?? 0,
+      input.todos_written ?? 0,
+      input.review_items_written ?? 0,
       input.error ?? null,
       Date.now(),
       runId,
@@ -324,13 +431,162 @@ export function hasAiOutput(sourceKey: string): boolean {
   return Boolean(row)
 }
 
+export function getAiOutput(sourceKey: string): { target: string; supabase_id: string | null } | null {
+  const row = getDb()
+    .prepare('SELECT target, supabase_id FROM ai_output_dedupe WHERE source_key = ?')
+    .get(sourceKey) as { target: string; supabase_id: string | null } | undefined
+  return row ?? null
+}
+
 export function recordAiOutput(sourceKey: string, target: string, supabaseId?: string | null): void {
   getDb()
     .prepare(`
-      INSERT OR IGNORE INTO ai_output_dedupe (source_key, target, supabase_id)
+      INSERT INTO ai_output_dedupe (source_key, target, supabase_id)
       VALUES (?, ?, ?)
+      ON CONFLICT(source_key) DO UPDATE SET
+        target = excluded.target,
+        supabase_id = COALESCE(ai_output_dedupe.supabase_id, excluded.supabase_id)
     `)
     .run(sourceKey, target, supabaseId ?? null)
+}
+
+export function recordAiRunOutput(input: {
+  run_id: number
+  source_key: string
+  target: AiRunOutputRow['target']
+  contact_id: string | null
+  supabase_id?: string | null
+  label?: string | null
+}): void {
+  getDb()
+    .prepare(`
+      INSERT INTO ai_run_outputs
+        (run_id, source_key, target, contact_id, supabase_id, label)
+      VALUES
+        (@run_id, @source_key, @target, @contact_id, @supabase_id, @label)
+    `)
+    .run({
+      run_id: input.run_id,
+      source_key: input.source_key,
+      target: input.target,
+      contact_id: input.contact_id,
+      supabase_id: input.supabase_id ?? null,
+      label: input.label ?? null,
+    })
+}
+
+export function latestAiRunOutputs(limit = 200): AiRunOutputRow[] {
+  return getDb()
+    .prepare('SELECT * FROM ai_run_outputs ORDER BY created_at DESC LIMIT ?')
+    .all(limit) as AiRunOutputRow[]
+}
+
+export function stageAiOutput(input: {
+  run_id: number
+  source_key: string
+  target: AiStagedOutputRow['target']
+  contact_id: string | null
+  interaction_date?: string | null
+  title?: string | null
+  body?: string | null
+  payload: Record<string, unknown>
+}): number | null {
+  const body = input.body ?? null
+  const dedupeKey = [
+    input.source_key,
+    input.target,
+    input.contact_id ?? '',
+    input.interaction_date ?? '',
+    body ?? '',
+  ].join('|')
+  const result = getDb()
+    .prepare(`
+      INSERT OR IGNORE INTO ai_staged_outputs
+        (run_id, dedupe_key, source_key, target, contact_id, interaction_date, title, body, payload_json)
+      VALUES
+        (@run_id, @dedupe_key, @source_key, @target, @contact_id, @interaction_date, @title, @body, @payload_json)
+    `)
+    .run({
+      run_id: input.run_id,
+      dedupe_key: dedupeKey,
+      source_key: input.source_key,
+      target: input.target,
+      contact_id: input.contact_id,
+      interaction_date: input.interaction_date ?? null,
+      title: input.title ?? null,
+      body,
+      payload_json: JSON.stringify(input.payload),
+    })
+  return result.lastInsertRowid ? Number(result.lastInsertRowid) : null
+}
+
+export function latestAiStagedOutputs(limit = 300): AiStagedOutputRow[] {
+  return getDb()
+    .prepare(`
+      SELECT * FROM ai_staged_outputs
+      ORDER BY
+        CASE status WHEN 'pending' THEN 0 WHEN 'failed' THEN 1 WHEN 'synced' THEN 2 ELSE 3 END,
+        created_at DESC
+      LIMIT ?
+    `)
+    .all(limit) as AiStagedOutputRow[]
+}
+
+export function pendingAiStagedOutputs(limit = 500): AiStagedOutputRow[] {
+  return getDb()
+    .prepare(`
+      SELECT * FROM ai_staged_outputs
+      WHERE status IN ('pending','failed')
+      ORDER BY created_at ASC
+      LIMIT ?
+    `)
+    .all(limit) as AiStagedOutputRow[]
+}
+
+export function getAiStagedOutput(id: number): AiStagedOutputRow | null {
+  const row = getDb()
+    .prepare('SELECT * FROM ai_staged_outputs WHERE id = ?')
+    .get(id) as AiStagedOutputRow | undefined
+  return row ?? null
+}
+
+export function updateAiStagedOutput(input: {
+  id: number
+  body?: string | null
+  status?: AiStagedOutputRow['status']
+  payload?: Record<string, unknown>
+  supabase_id?: string | null
+  error?: string | null
+  confirmed_at?: number | null
+}): void {
+  const row = getAiStagedOutput(input.id)
+  if (!row) return
+  let payloadJson = row.payload_json
+  if (input.payload) payloadJson = JSON.stringify(input.payload)
+  getDb()
+    .prepare(`
+      UPDATE ai_staged_outputs
+      SET body = ?, status = ?, payload_json = ?, supabase_id = ?, error = ?,
+          confirmed_at = ?, updated_at = ?
+      WHERE id = ?
+    `)
+    .run(
+      input.body ?? row.body,
+      input.status ?? row.status,
+      payloadJson,
+      input.supabase_id ?? row.supabase_id,
+      input.error ?? null,
+      input.confirmed_at ?? row.confirmed_at,
+      Date.now(),
+      input.id,
+    )
+}
+
+export function countPendingAiStagedOutputs(): number {
+  const row = getDb()
+    .prepare("SELECT COUNT(*) AS c FROM ai_staged_outputs WHERE status IN ('pending','failed')")
+    .get() as { c: number }
+  return row.c
 }
 
 // ─── Sessions ────────────────────────────────────────────────────────
