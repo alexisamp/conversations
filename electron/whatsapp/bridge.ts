@@ -74,8 +74,8 @@ function findBinary(): string | null {
   return null
 }
 
-function isGroupJid(jid: string): boolean {
-  return jid.endsWith('@g.us')
+function isPersonJid(jid: string): boolean {
+  return jid.endsWith('@s.whatsapp.net')
 }
 
 function phoneFromJid(jid: string): string | null {
@@ -222,13 +222,12 @@ export class WhatsappBridge {
       for (const row of rows) {
         const timestampMs = parseTimestamp(row.timestamp)
         if (!timestampMs) continue
-        const chatKind = isGroupJid(row.chat_jid) ? 'group' : 'person'
-        if (chatKind === 'group') continue
+        if (!isPersonJid(row.chat_jid)) continue
         const mediaType = row.media_type || null
         inputs.push({
           wa_message_id: row.id,
           chat_id: row.chat_jid,
-          chat_kind: chatKind,
+          chat_kind: 'person',
           chat_name: row.chat_name || null,
           sender: row.sender || null,
           sender_phone: phoneFromJid(row.sender || ''),

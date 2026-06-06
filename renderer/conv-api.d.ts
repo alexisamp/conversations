@@ -338,6 +338,8 @@ export type ConvApi = {
     updateStagedOutput(id: number, body: string): Promise<AiStagedOutput | null>
     approveStagedOutput(id: number): Promise<{ ok: true } | { ok: false; error: string }>
     approvePendingStagedOutputs(): Promise<{ ok: true; synced: number; failed: number }>
+    approveStagedOutputs(ids: number[]): Promise<{ ok: true; synced: number; failed: number }>
+    rejectStagedOutputs(ids: number[]): Promise<{ ok: true }>
   }
   identity: {
     linkChatToContact(input: {

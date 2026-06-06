@@ -17,6 +17,7 @@ import {
   recordAiRunOutput,
   stageAiOutput,
   updateAiStagedOutput,
+  updateAiStagedOutputsStatus,
   getAiStagedOutput,
   type AiRunOutputRow,
   type AiStagedOutputRow,
@@ -265,6 +266,31 @@ export class DailyInsightRunner {
     }
     this.options.publishStatus()
     return { ok: true, synced, failed }
+  }
+
+  async approveStagedOutputs(ids: number[]): Promise<{ ok: true; synced: number; failed: number }> {
+    let synced = 0
+    let failed = 0
+    for (const id of ids) {
+      const row = getAiStagedOutput(id)
+      if (!row || row.status === 'synced') continue
+      try {
+        await this.syncStagedOutput(row)
+        synced++
+      } catch (err) {
+        failed++
+        const message = err instanceof Error ? err.message : String(err)
+        updateAiStagedOutput({ id, status: 'failed', error: message })
+      }
+    }
+    this.options.publishStatus()
+    return { ok: true, synced, failed }
+  }
+
+  rejectStagedOutputs(ids: number[]): { ok: true } {
+    updateAiStagedOutputsStatus(ids, 'rejected')
+    this.options.publishStatus()
+    return { ok: true }
   }
 
   private async runRange(startMs: number, endMs: number, reason: string): Promise<InsightRunResult> {

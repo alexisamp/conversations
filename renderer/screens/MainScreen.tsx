@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useRef, useState } from 'react'
+import { Fragment, type Dispatch, type SetStateAction, useCallback, useEffect, useRef, useState } from 'react'
 import { ContactDetailScreen } from './ContactDetailScreen'
 import { GroupScreen } from './GroupScreen'
 import { LinkedinProfileScreen } from './LinkedinProfileScreen'
@@ -164,6 +164,22 @@ export function MainScreen({ email }: { email: string }) {
     }
   }
 
+  async function approveStagedOutputs(ids: number[]) {
+    setSyncBusy(true)
+    try {
+      await window.conv.insights.approveStagedOutputs(ids)
+      await refreshSync()
+      if (lastHitPhoneRef.current) await handleRefresh()
+    } finally {
+      setSyncBusy(false)
+    }
+  }
+
+  async function rejectStagedOutputs(ids: number[]) {
+    await window.conv.insights.rejectStagedOutputs(ids)
+    await refreshSync()
+  }
+
   async function approveStagedOutput(id: number) {
     setSyncBusy(true)
     try {
@@ -277,7 +293,9 @@ export function MainScreen({ email }: { email: string }) {
           onRefreshSync={refreshSync}
           onUpdateStagedOutput={updateStagedOutput}
           onApproveStagedOutput={approveStagedOutput}
+          onApproveStagedOutputs={approveStagedOutputs}
           onApproveAllStagedOutputs={approveAllStagedOutputs}
+          onRejectStagedOutputs={rejectStagedOutputs}
           onResolveIssue={setResolvingIssue}
         />
       </div>
@@ -550,7 +568,8 @@ function AiReviewTable({
   onRefresh,
   onUpdate,
   onApprove,
-  onApproveAll,
+  onApproveMany,
+  onRejectMany,
   onResolveIssue,
 }: {
   outputs: AiStagedOutput[]
@@ -559,13 +578,18 @@ function AiReviewTable({
   onRefresh: () => void
   onUpdate: (id: number, body: string) => Promise<void>
   onApprove: (id: number) => Promise<void>
-  onApproveAll: () => Promise<void>
+  onApproveMany: (ids: number[]) => Promise<void>
+  onRejectMany: (ids: number[]) => Promise<void>
   onResolveIssue: (issue: SyncIssue) => void
 }) {
   const [editing, setEditing] = useState<Record<number, string>>({})
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
   const visibleOutputs = outputs.filter((output) => output.status !== 'rejected')
-  const identityIssues = issues.filter((issue) => issue.kind === 'identity_resolution' && issue.status === 'open')
+  const identityIssues = issues.filter((issue) =>
+    issue.kind === 'identity_resolution' &&
+    issue.status === 'open' &&
+    Boolean(issue.chat_key?.endsWith('@s.whatsapp.net')),
+  )
   const pending = visibleOutputs.filter((output) => output.status === 'pending' || output.status === 'failed')
   const groups = aiReviewGroups(visibleOutputs, identityIssues)
 
@@ -581,27 +605,26 @@ function AiReviewTable({
         </div>
         <div className="ai-review-actions">
           <button className="ghost" onClick={onRefresh} disabled={busy}>Refresh</button>
-          <button className="primary" onClick={onApproveAll} disabled={busy || pending.length === 0}>
-            Approve pending
-          </button>
         </div>
       </header>
       <div className="ai-review-table-wrap">
         <table className="ai-review-table ai-review-grouped">
           <thead>
             <tr>
-              <th>Person / chat</th>
               <th>reThink</th>
-              <th>Needs</th>
               <th>Days</th>
-              <th>AI rows</th>
-              <th />
+              <th>Activity</th>
+              <th>Facts</th>
+              <th>Value</th>
+              <th>Todos</th>
+              <th>Review</th>
+              <th>Actions</th>
             </tr>
           </thead>
           <tbody>
             {groups.length === 0 ? (
               <tr>
-                <td colSpan={6} className="ai-review-empty">No AI proposals or identity issues.</td>
+                <td colSpan={8} className="ai-review-empty">No AI proposals or identity issues.</td>
               </tr>
             ) : (
               groups.map((group) => {
@@ -609,7 +632,7 @@ function AiReviewTable({
                 return (
                   <Fragment key={group.key}>
                     <tr key={group.key} className={group.needsIdentity ? 'ai-row-failed' : 'ai-row-pending'}>
-                      <td>
+                      <td className="ai-person-cell">
                         <button
                           className="ai-expand"
                           onClick={() =>
@@ -619,13 +642,33 @@ function AiReviewTable({
                           {isOpen ? '−' : '+'}
                         </button>
                         <strong>{group.title}</strong>
-                        <span>{group.contactId ? shortId(group.contactId) : group.chatKey ?? 'unlinked'}</span>
+                        <span>{group.contactId ? '✓ linked to reThink' : '○ not linked'}</span>
                       </td>
-                      <td>{group.contactId ? '✓ linked' : 'needs link'}</td>
-                      <td>{group.needsIdentity ? 'identity' : group.failedCount ? 'failed rows' : 'review'}</td>
                       <td>{group.days.length}</td>
-                      <td>{group.outputs.length}</td>
+                      <td>{group.counts.interaction}</td>
+                      <td>{group.counts.contact_fact}</td>
+                      <td>{group.counts.value_log}</td>
+                      <td>{group.counts.todo}</td>
+                      <td>{group.counts.review_item}</td>
                       <td>
+                        {group.outputs.length > 0 && (
+                          <>
+                            <button
+                              className="ghost"
+                              disabled={busy || group.needsIdentity}
+                              onClick={() => onApproveMany(group.outputs.map((output) => output.id))}
+                            >
+                              Approve contact
+                            </button>
+                            <button
+                              className="ghost"
+                              disabled={busy}
+                              onClick={() => onRejectMany(group.outputs.map((output) => output.id))}
+                            >
+                              Omit
+                            </button>
+                          </>
+                        )}
                         {group.issue && (
                           <button className="ghost" onClick={() => onResolveIssue(group.issue!)}>
                             Link/create
@@ -636,16 +679,17 @@ function AiReviewTable({
                     {isOpen && group.days.map((day) => (
                       <Fragment key={`${group.key}:${day.date}`}>
                         <tr key={`${group.key}:${day.date}`} className="ai-day-row">
-                          <td />
-                          <td colSpan={5}>
+                          <td>
                             <strong>{day.date}</strong>
                             <span>{day.outputs.length} proposed writes</span>
                           </td>
+                          <td />
+                          <td colSpan={6} />
                         </tr>
                         {day.outputs.length === 0 && group.issue ? (
                           <tr key={`${group.key}:${day.date}:issue`} className="ai-output-row">
                             <td />
-                            <td colSpan={4}>Link this chat to reThink before AI can write structured rows.</td>
+                            <td colSpan={6}>Link this chat to reThink before AI can write structured rows.</td>
                             <td>
                               <button className="ghost" onClick={() => onResolveIssue(group.issue!)}>
                                 Resolve
@@ -653,41 +697,23 @@ function AiReviewTable({
                             </td>
                           </tr>
                         ) : (
-                          day.outputs.map((output) => {
-                            const draft = editing[output.id] ?? output.body ?? ''
-                            return (
-                              <tr key={output.id} className={`ai-output-row ai-row-${output.status}`}>
-                                <td />
-                                <td><code>{targetLabel(output.target)}</code></td>
-                                <td colSpan={2}>
-                                  <textarea
-                                    value={draft}
-                                    disabled={output.status === 'synced'}
-                                    onChange={(event) =>
-                                      setEditing((current) => ({ ...current, [output.id]: event.target.value }))
-                                    }
-                                    onBlur={() => {
-                                      if (draft !== (output.body ?? '')) void onUpdate(output.id, draft)
-                                    }}
-                                  />
-                                  {output.error && <div className="ai-review-error">{output.error}</div>}
-                                </td>
-                                <td>{output.status}</td>
-                                <td>
-                                  <button
-                                    className="ghost"
-                                    disabled={busy || output.status === 'synced'}
-                                    onClick={async () => {
-                                      if (draft !== (output.body ?? '')) await onUpdate(output.id, draft)
-                                      await onApprove(output.id)
-                                    }}
-                                  >
-                                    Approve
-                                  </button>
-                                </td>
-                              </tr>
-                            )
-                          })
+                          <tr key={`${group.key}:${day.date}:outputs`} className="ai-output-row">
+                            <td />
+                            {(['interaction', 'contact_fact', 'value_log', 'todo', 'review_item'] as const).map((target) => (
+                              <td key={target}>
+                                <AiOutputCell
+                                  outputs={day.outputs.filter((output) => output.target === target)}
+                                  editing={editing}
+                                  busy={busy}
+                                  onEdit={setEditing}
+                                  onUpdate={onUpdate}
+                                  onApprove={onApprove}
+                                  onReject={onRejectMany}
+                                />
+                              </td>
+                            ))}
+                            <td />
+                          </tr>
                         )}
                       </Fragment>
                     ))}
@@ -710,8 +736,65 @@ type AiReviewGroup = {
   issue: SyncIssue | null
   needsIdentity: boolean
   failedCount: number
+  counts: Record<AiStagedOutput['target'], number>
   outputs: AiStagedOutput[]
   days: Array<{ date: string; outputs: AiStagedOutput[] }>
+}
+
+function AiOutputCell({
+  outputs,
+  editing,
+  busy,
+  onEdit,
+  onUpdate,
+  onApprove,
+  onReject,
+}: {
+  outputs: AiStagedOutput[]
+  editing: Record<number, string>
+  busy: boolean
+  onEdit: Dispatch<SetStateAction<Record<number, string>>>
+  onUpdate: (id: number, body: string) => Promise<void>
+  onApprove: (id: number) => Promise<void>
+  onReject: (ids: number[]) => Promise<void>
+}) {
+  if (outputs.length === 0) return <span className="ai-empty-cell">—</span>
+  return (
+    <div className="ai-cell-stack">
+      {outputs.map((output) => {
+        const draft = editing[output.id] ?? output.body ?? ''
+        return (
+          <div key={output.id} className={`ai-cell-item ai-row-${output.status}`}>
+            <textarea
+              value={draft}
+              disabled={output.status === 'synced'}
+              onChange={(event) =>
+                onEdit((current) => ({ ...current, [output.id]: event.target.value }))
+              }
+              onBlur={() => {
+                if (draft.trim().length === 0) void onReject([output.id])
+                else if (draft !== (output.body ?? '')) void onUpdate(output.id, draft)
+              }}
+            />
+            {output.error && <div className="ai-review-error">{output.error}</div>}
+            <div className="ai-cell-actions">
+              <span>{output.status}</span>
+              <button
+                className="ghost"
+                disabled={busy || output.status === 'synced' || draft.trim().length === 0}
+                onClick={async () => {
+                  if (draft !== (output.body ?? '')) await onUpdate(output.id, draft)
+                  await onApprove(output.id)
+                }}
+              >
+                Approve
+              </button>
+            </div>
+          </div>
+        )
+      })}
+    </div>
+  )
 }
 
 function aiReviewGroups(outputs: AiStagedOutput[], issues: SyncIssue[]): AiReviewGroup[] {
@@ -726,10 +809,12 @@ function aiReviewGroups(outputs: AiStagedOutput[], issues: SyncIssue[]): AiRevie
       issue: null,
       needsIdentity: !output.contact_id,
       failedCount: 0,
+      counts: { interaction: 0, contact_fact: 0, value_log: 0, todo: 0, review_item: 0 },
       outputs: [],
       days: [],
     }
     group.outputs.push(output)
+    group.counts[output.target]++
     if (output.status === 'failed') group.failedCount++
     groups.set(key, group)
   }
@@ -745,6 +830,7 @@ function aiReviewGroups(outputs: AiStagedOutput[], issues: SyncIssue[]): AiRevie
       issue,
       needsIdentity: true,
       failedCount: 0,
+      counts: { interaction: 0, contact_fact: 0, value_log: 0, todo: 0, review_item: 0 },
       outputs: [],
       days: [{ date: 'Unlinked', outputs: [] }],
     })
@@ -833,7 +919,9 @@ function Body({
   onRefreshSync,
   onUpdateStagedOutput,
   onApproveStagedOutput,
+  onApproveStagedOutputs,
   onApproveAllStagedOutputs,
+  onRejectStagedOutputs,
   onResolveIssue,
 }: {
   context: SidebarContext
@@ -845,7 +933,9 @@ function Body({
   onRefreshSync: () => void
   onUpdateStagedOutput: (id: number, body: string) => Promise<void>
   onApproveStagedOutput: (id: number) => Promise<void>
+  onApproveStagedOutputs: (ids: number[]) => Promise<void>
   onApproveAllStagedOutputs: () => Promise<void>
+  onRejectStagedOutputs: (ids: number[]) => Promise<void>
   onResolveIssue: (issue: SyncIssue) => void
 }) {
   if (context.tab === 'ai') {
@@ -857,7 +947,8 @@ function Body({
         onRefresh={onRefreshSync}
         onUpdate={onUpdateStagedOutput}
         onApprove={onApproveStagedOutput}
-        onApproveAll={onApproveAllStagedOutputs}
+        onApproveMany={onApproveStagedOutputs}
+        onRejectMany={onRejectStagedOutputs}
         onResolveIssue={onResolveIssue}
       />
     )

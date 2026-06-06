@@ -1781,11 +1781,11 @@ body {
 }
 .ai-review-table th:nth-child(1),
 .ai-review-table td:nth-child(1) {
-  width: 24%;
+  width: 22%;
 }
 .ai-review-table th:nth-child(2),
 .ai-review-table td:nth-child(2) {
-  width: 11%;
+  width: 7%;
 }
 .ai-review-table th:nth-child(3),
 .ai-review-table td:nth-child(3) {
@@ -1793,11 +1793,11 @@ body {
 }
 .ai-review-table th:nth-child(5),
 .ai-review-table td:nth-child(5) {
-  width: 10%;
+  width: 14%;
 }
-.ai-review-table th:nth-child(6),
-.ai-review-table td:nth-child(6) {
-  width: 92px;
+.ai-review-table th:nth-child(8),
+.ai-review-table td:nth-child(8) {
+  width: 150px;
 }
 .ai-review-table td strong {
   display: block;
@@ -1821,7 +1821,7 @@ body {
 }
 .ai-review-table textarea {
   width: 100%;
-  min-height: 64px;
+  min-height: 58px;
   max-height: 180px;
   resize: vertical;
   border: 1px solid var(--mercury);
@@ -1830,6 +1830,64 @@ body {
   font: inherit;
   color: var(--midnight);
   background: #fff;
+}
+.ai-person-cell {
+  position: relative;
+}
+.ai-person-cell > strong {
+  display: inline;
+  vertical-align: middle;
+  font-size: 13px;
+}
+.ai-person-cell > span {
+  display: block;
+  margin-left: 34px;
+  margin-top: 4px;
+  font-family: inherit;
+  font-size: 11px;
+}
+.ai-cell-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ai-cell-item {
+  border: 1px solid #e5e7eb;
+  border-radius: 7px;
+  background: #fff;
+  padding: 6px;
+}
+.ai-cell-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 5px;
+}
+.ai-cell-actions span {
+  font-family: inherit;
+  font-size: 10px;
+  color: var(--shuttle);
+}
+.ai-cell-actions .ghost,
+.ai-review-table td > .ghost {
+  background: white;
+  border: 1px solid var(--mercury);
+  color: var(--burnham);
+  border-radius: 6px;
+  padding: 5px 7px;
+  font-size: 10px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.ai-cell-actions .ghost:disabled,
+.ai-review-table td > .ghost:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.ai-empty-cell {
+  color: #cbd5e1;
+  font-family: inherit;
 }
 .ai-review-table textarea:disabled {
   background: #f8fafc;

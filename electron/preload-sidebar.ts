@@ -363,6 +363,10 @@ const api = {
       ipcRenderer.invoke('insights:approve-staged-output', id),
     approvePendingStagedOutputs: (): Promise<{ ok: true; synced: number; failed: number }> =>
       ipcRenderer.invoke('insights:approve-pending-staged-outputs'),
+    approveStagedOutputs: (ids: number[]): Promise<{ ok: true; synced: number; failed: number }> =>
+      ipcRenderer.invoke('insights:approve-staged-outputs', ids),
+    rejectStagedOutputs: (ids: number[]): Promise<{ ok: true }> =>
+      ipcRenderer.invoke('insights:reject-staged-outputs', ids),
   },
   identity: {
     linkChatToContact: (input: {

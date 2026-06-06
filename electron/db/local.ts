@@ -239,6 +239,7 @@ export function bridgeMessagesForRange(startMs: number, endMs: number): BridgeMe
       WHERE chat_kind = 'person'
         AND timestamp_ms >= ?
         AND timestamp_ms <= ?
+        AND chat_id LIKE '%@s.whatsapp.net'
         AND synced_at IS NULL
       ORDER BY chat_id ASC, timestamp_ms ASC
     `)
@@ -253,6 +254,7 @@ export function bridgeMessagesForStructuredRepair(startMs: number, endMs: number
         AND timestamp_ms >= ?
         AND timestamp_ms <= ?
         AND contact_id IS NOT NULL
+        AND chat_id LIKE '%@s.whatsapp.net'
       ORDER BY chat_id ASC, timestamp_ms ASC
     `)
     .all(startMs, endMs) as BridgeMessageRow[]
@@ -262,7 +264,7 @@ export function bridgeMessagesForChat(chatId: string): BridgeMessageRow[] {
   return getDb()
     .prepare(`
       SELECT * FROM bridge_messages
-      WHERE chat_id = ? AND chat_kind = 'person' AND synced_at IS NULL
+      WHERE chat_id = ? AND chat_kind = 'person' AND chat_id LIKE '%@s.whatsapp.net' AND synced_at IS NULL
       ORDER BY timestamp_ms ASC
     `)
     .all(chatId) as BridgeMessageRow[]
@@ -580,6 +582,22 @@ export function updateAiStagedOutput(input: {
       Date.now(),
       input.id,
     )
+}
+
+export function updateAiStagedOutputsStatus(
+  ids: number[],
+  status: AiStagedOutputRow['status'],
+  error: string | null = null,
+): void {
+  if (ids.length === 0) return
+  const placeholders = ids.map(() => '?').join(',')
+  getDb()
+    .prepare(`
+      UPDATE ai_staged_outputs
+      SET status = ?, error = ?, updated_at = ?
+      WHERE id IN (${placeholders})
+    `)
+    .run(status, error, Date.now(), ...ids)
 }
 
 export function countPendingAiStagedOutputs(): number {

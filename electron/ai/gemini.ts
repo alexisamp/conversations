@@ -110,7 +110,7 @@ export type WhatsappInsightExtraction = {
     needs_review: boolean
   }>
   value_logs: Array<{
-    type: 'introduction' | 'content' | 'referral' | 'advice' | 'endorsement' | 'opportunity' | 'candor' | 'other'
+    type: 'introduction' | 'content' | 'referral' | 'opportunity'
     direction: 'given' | 'received'
     description: string
   }>
@@ -147,6 +147,30 @@ function fallbackExtraction(conversationText: string): WhatsappInsightExtraction
   }
 }
 
+function normalizeValueLogs(valueLogs: WhatsappInsightExtraction['value_logs']): WhatsappInsightExtraction['value_logs'] {
+  const allowed = new Set(['introduction', 'content', 'referral', 'opportunity'])
+  return valueLogs
+    .filter((value) => value.description?.trim())
+    .map((value) => ({
+      type: allowed.has(value.type) ? value.type : 'content',
+      direction: value.direction === 'received' ? 'received' : 'given',
+      description: value.description.trim(),
+    }))
+    .filter((value) => {
+      const text = value.description.toLowerCase()
+      if (value.type === 'introduction') {
+        return /\b(introdu|present|conect|conex|intro)\w*/i.test(text)
+      }
+      if (value.type === 'referral') {
+        return /\b(referr|refer|recomen|deriv|candidat|postul)\w*/i.test(text)
+      }
+      if (value.type === 'opportunity') {
+        return /\b(oportunidad|trabajo|cliente|deal|lead|vacante|entrevista|rol|position|job)\b/i.test(text)
+      }
+      return /\b(archivo|file|documento|doc|link|url|recurso|plantilla|cv|resume|pdf|sheet|info no pública|información no pública|dato no público)\b/i.test(text)
+    })
+}
+
 export async function extractWhatsappInsights(input: {
   conversationText: string
   interactionDate: string
@@ -172,7 +196,13 @@ export async function extractWhatsappInsights(input: {
     'La conversación ya viene cortada por día local y por ventana corta; NO consolides varios días.',
     'El campo summary solo va a interactions.notes. No escondas facts, valor o tareas dentro del summary.',
     'Si aparece un hecho durable sobre la persona, va en contact_facts. Si es sensible o ambiguo, usa needs_review=true.',
-    'Si hubo ayuda explícita, intro, consejo, referral, oportunidad, endorsement o candor dado/recibido, va en value_logs.',
+    'value_logs es MUY estricto. Solo incluye valor si hay una de estas señales explícitas:',
+    '- introduction: se presentó o conectó a una persona concreta.',
+    '- content: se compartió un archivo, link, documento, CV, plantilla, recurso o media relevante.',
+    '- referral: se derivó/recomendó una persona para una oportunidad concreta.',
+    '- opportunity: se compartió una oportunidad, lead, trabajo, cliente o deal concreto.',
+    '- content también puede usarse para info relevante NO pública y accionable, pero la descripción debe empezar con "Info no pública:".',
+    'NO es value: apoyo emocional, ánimo, opinión, coordinación familiar, logística, bromas, consejos genéricos, cariño, pagos cotidianos, disponibilidad o conversación normal.',
     'Si hay compromiso o siguiente paso concreto, va en todos y, si corresponde, también next_step.',
     `Fecha exacta de interacción: ${input.interactionDate}. Usa esa fecha para todos/tareas si no hay otra fecha explícita.`,
     input.contactName ? `Contacto: ${input.contactName}` : '',
@@ -184,7 +214,7 @@ export async function extractWhatsappInsights(input: {
     '  "next_step_date": "YYYY-MM-DD o null",',
     '  "next_step_owner": "me | them | null",',
     '  "contact_facts": [{"category":"family|career_intel|compensation|obsession|hot_button|life_phase|pet_peeve|origin_story|health|preference|other","label":null|string,"value":"hecho durable","importance":1|2|3,"needs_review":true|false}],',
-    '  "value_logs": [{"type":"introduction|content|referral|advice|endorsement|opportunity|candor|other","direction":"given|received","description":"valor explícito"}],',
+    '  "value_logs": [{"type":"introduction|content|referral|opportunity","direction":"given|received","description":"valor explícito, no conversación normal"}],',
     '  "todos": [{"text":"tarea concreta","date":"YYYY-MM-DD|null"}]',
     '}',
     '',
@@ -227,7 +257,7 @@ export async function extractWhatsappInsights(input: {
       next_step_date: typeof parsed.next_step_date === 'string' && parsed.next_step_date.trim() ? parsed.next_step_date.trim() : null,
       next_step_owner: parsed.next_step_owner === 'me' || parsed.next_step_owner === 'them' ? parsed.next_step_owner : null,
       contact_facts: Array.isArray(parsed.contact_facts) ? parsed.contact_facts : [],
-      value_logs: Array.isArray(parsed.value_logs) ? parsed.value_logs : [],
+      value_logs: Array.isArray(parsed.value_logs) ? normalizeValueLogs(parsed.value_logs) : [],
       todos: Array.isArray(parsed.todos) ? parsed.todos : [],
     }
   } catch (err) {

@@ -1706,6 +1706,14 @@ function registerIpc(): void {
     if (!insightRunner) throw new Error('Insight runner not ready')
     return insightRunner.approvePendingStagedOutputs()
   })
+  ipcMain.handle('insights:approve-staged-outputs', async (_event, ids: number[]) => {
+    if (!insightRunner) throw new Error('Insight runner not ready')
+    return insightRunner.approveStagedOutputs(ids)
+  })
+  ipcMain.handle('insights:reject-staged-outputs', (_event, ids: number[]) => {
+    if (!insightRunner) throw new Error('Insight runner not ready')
+    return insightRunner.rejectStagedOutputs(ids)
+  })
   ipcMain.handle('identity:link-chat-to-contact', (_event, input: {
     chat_id: string
     contact_id: string
