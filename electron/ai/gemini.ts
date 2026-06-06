@@ -4,10 +4,14 @@
 // Same approach as reThink's useGeminiScorer.ts: no SDK, just fetch to
 // generativelanguage.googleapis.com/v1beta.
 
-const MODEL = 'gemini-2.0-flash'
+const DEFAULT_MODEL = 'gemini-2.5-flash'
 
 function getApiKey(): string | null {
   return process.env.VITE_GEMINI_API_KEY ?? null
+}
+
+function getModel(): string {
+  return process.env.VITE_GEMINI_MODEL || DEFAULT_MODEL
 }
 
 /**
@@ -50,7 +54,7 @@ export async function summarizeSession(
   const timeout = setTimeout(() => controller.abort(), 30_000)
 
   try {
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${apiKey}`
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${getModel()}:generateContent?key=${apiKey}`
 
     const res = await fetch(url, {
       method: 'POST',
@@ -193,7 +197,7 @@ export async function extractWhatsappInsights(input: {
   const timeout = setTimeout(() => controller.abort(), 45_000)
 
   try {
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${apiKey}`
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${getModel()}:generateContent?key=${apiKey}`
     const res = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
