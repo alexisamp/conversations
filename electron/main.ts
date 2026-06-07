@@ -782,6 +782,13 @@ async function linkBridgeChatToContact(input: {
         verified: true,
       })
       if (error && error.code !== '23505') return { ok: false, error: error.message }
+    } else if (input.wa_name?.trim()) {
+      await supabase
+        .from('contact_channels')
+        .update({ channel_name: input.wa_name.trim() })
+        .eq('channel', 'whatsapp')
+        .eq('channel_identifier', identifier)
+        .eq('outreach_log_id', input.contact_id)
     }
 
     const now = Date.now()
@@ -799,12 +806,27 @@ async function linkBridgeChatToContact(input: {
       input.chat_id,
       input.wa_name ?? input.phone ?? input.chat_id,
     )
+    if (input.wa_name?.trim()) {
+      getDb().prepare(`
+        UPDATE sync_issues
+        SET title = ?, updated_at = ?
+        WHERE kind = 'identity_resolution'
+          AND (issue_key = ? OR chat_key = ? OR contact_id = ?)
+      `).run(input.wa_name.trim(), now, `bridge-identity:${input.chat_id}`, input.chat_id, input.contact_id)
+    }
     getDb().prepare(`
       UPDATE bridge_messages
       SET contact_id = ?,
           chat_name = COALESCE(NULLIF(?, ''), chat_name)
       WHERE chat_id = ? OR chat_name = ?
     `).run(input.contact_id, input.wa_name, input.chat_id, input.wa_name)
+    if (input.wa_name?.trim()) {
+      getDb().prepare(`
+        UPDATE ai_staged_outputs
+        SET title = ?, updated_at = ?
+        WHERE contact_id = ?
+      `).run(input.wa_name.trim(), now, input.contact_id)
+    }
 
     await insightRunner?.runChat(input.chat_id)
     phoneContactIdCache.clear()

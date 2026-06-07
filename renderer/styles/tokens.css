@@ -1810,7 +1810,7 @@ body {
 }
 .ai-review-table {
   width: max-content;
-  min-width: 1455px;
+  min-width: 1515px;
   border-collapse: collapse;
   table-layout: fixed;
   font-size: 12px;
@@ -1875,7 +1875,7 @@ body {
 }
 .ai-review-table th:nth-child(9),
 .ai-review-table td:nth-child(9) {
-  width: 130px;
+  width: 190px;
   position: sticky;
   right: 0;
   z-index: 2;
@@ -1987,11 +1987,13 @@ body {
 .ai-cell-actions {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
   gap: 4px;
+  flex-wrap: wrap;
   margin-top: 3px;
 }
 .ai-cell-actions span {
+  flex: 1 0 100%;
   font-family: inherit;
   font-size: 9.5px;
   color: var(--shuttle);
@@ -2008,6 +2010,7 @@ body {
   font-size: 10px;
   font-weight: 700;
   cursor: pointer;
+  white-space: nowrap;
 }
 .ai-primary-action {
   background: var(--burnham);
@@ -2088,7 +2091,7 @@ body {
 .ai-output-grid {
   margin-left: 355px;
   display: grid;
-  grid-template-columns: 280px 130px 150px 150px 140px 120px 130px;
+  grid-template-columns: 280px 130px 150px 150px 140px 120px 190px;
   min-height: 44px;
   border-left: 1px solid #edf0ed;
 }

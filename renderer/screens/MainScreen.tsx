@@ -598,7 +598,7 @@ function AiReviewTable({
 }) {
   const [editing, setEditing] = useState<Record<number, string>>({})
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
-  const visibleOutputs = outputs.filter((output) => output.status !== 'rejected')
+  const visibleOutputs = outputs.filter((output) => output.status === 'pending' || output.status === 'failed')
   const identityIssues = issues.filter((issue) =>
     issue.kind === 'identity_resolution' &&
     issue.status === 'open' &&

@@ -401,9 +401,7 @@ export class DailyInsightRunner {
       feedback,
       decision: input.decision,
     })
-    if (input.decision === 'reject') {
-      updateAiStagedOutputsStatus([row.id], 'rejected')
-    }
+    updateAiStagedOutputsStatus([row.id], 'rejected')
     this.options.publishStatus()
     return { ok: true }
   }
