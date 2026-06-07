@@ -9,7 +9,6 @@ import {
   getDb,
   latestAiRunOutputs,
   latestAiStagedOutputs,
-  lastSuccessfulDailyAiRunAt,
   latestDailyAiRuns,
   markBridgeMessagesSynced,
   pendingAiStagedOutputs,
@@ -298,7 +297,7 @@ export class DailyInsightRunner {
     this.options.bridge.importRecentMessages()
 
     const end = Date.now()
-    const start = lastSuccessfulDailyAiRunAt() ?? end - STARTUP_LOOKBACK_MS
+    const start = end - STARTUP_LOOKBACK_MS
     return this.runRange(start, end, reason)
   }
 
