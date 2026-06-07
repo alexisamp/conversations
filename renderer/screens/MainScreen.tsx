@@ -297,6 +297,7 @@ export function MainScreen({ email }: { email: string }) {
           onApproveAllStagedOutputs={approveAllStagedOutputs}
           onRejectStagedOutputs={rejectStagedOutputs}
           onResolveIssue={setResolvingIssue}
+          onDismissIssue={dismissSyncIssue}
         />
       </div>
       {syncDrawerOpen && (
@@ -571,6 +572,7 @@ function AiReviewTable({
   onApproveMany,
   onRejectMany,
   onResolveIssue,
+  onDismissIssue,
 }: {
   outputs: AiStagedOutput[]
   issues: SyncIssue[]
@@ -581,6 +583,7 @@ function AiReviewTable({
   onApproveMany: (ids: number[]) => Promise<void>
   onRejectMany: (ids: number[]) => Promise<void>
   onResolveIssue: (issue: SyncIssue) => void
+  onDismissIssue: (issueKey: string) => void
 }) {
   const [editing, setEditing] = useState<Record<number, string>>({})
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
@@ -711,9 +714,14 @@ function AiReviewTable({
                             </>
                           )}
                           {group.issue && (
-                            <button className="ai-primary-action" onClick={() => onResolveIssue(group.issue!)}>
-                              Link
-                            </button>
+                            <>
+                              <button className="ai-primary-action" onClick={() => onResolveIssue(group.issue!)}>
+                                Link
+                              </button>
+                              <button className="ai-secondary-action" onClick={() => onDismissIssue(group.issue!.issue_key)}>
+                                Ignore
+                              </button>
+                            </>
                           )}
                         </div>
                       </td>
@@ -729,66 +737,96 @@ function AiReviewTable({
                           </td>
                         </tr>
                         {day.outputs.length === 0 && group.issue ? (
-                          <tr key={`${group.key}:${day.date}:issue`} className="ai-output-row">
-                            <td />
-                            <td colSpan={7}>Link this chat to reThink before AI can write structured rows.</td>
-                            <td>
-                              <button className="ai-primary-action" onClick={() => onResolveIssue(group.issue!)}>
-                                Resolve
-                              </button>
+                          <tr key={`${group.key}:${day.date}:issue`} className="ai-output-row ai-output-grid-row">
+                            <td colSpan={9}>
+                              <div className="ai-output-grid ai-output-grid-issue">
+                                <div className="ai-identity-context">
+                                  <strong>Needs identity before AI writes</strong>
+                                  <p>{group.issue.detail || 'No message preview available yet. Run Analyze new to refresh context from the local ledger.'}</p>
+                                </div>
+                                <div className="ai-sub-actions">
+                                  <button className="ai-primary-action" onClick={() => onResolveIssue(group.issue!)}>
+                                    Link
+                                  </button>
+                                  <button className="ai-secondary-action" onClick={() => onDismissIssue(group.issue!.issue_key)}>
+                                    Ignore chat
+                                  </button>
+                                </div>
+                              </div>
                             </td>
                           </tr>
                         ) : (
-                          <tr key={`${group.key}:${day.date}:outputs`} className="ai-output-row">
-                            <td />
-                            <td />
-                            <td>
-                              <AiOutputCell
-                                outputs={day.outputs.filter((output) => output.target === 'interaction')}
-                                editing={editing}
-                                busy={busy}
-                                onEdit={setEditing}
-                                onUpdate={onUpdate}
-                                onApprove={onApprove}
-                                onReject={onRejectMany}
-                              />
+                          <tr key={`${group.key}:${day.date}:outputs`} className="ai-output-row ai-output-grid-row">
+                            <td colSpan={9}>
+                              <div className="ai-output-grid">
+                                <div>
+                                  <AiOutputCell
+                                    outputs={day.outputs.filter((output) => output.target === 'interaction')}
+                                    editing={editing}
+                                    busy={busy}
+                                    onEdit={setEditing}
+                                    onUpdate={onUpdate}
+                                    onApprove={onApprove}
+                                    onReject={onRejectMany}
+                                  />
+                                </div>
+                                <div>
+                                  <AiOutputCell
+                                    outputs={day.outputs.filter(isKeyDateOutput)}
+                                    editing={editing}
+                                    busy={busy}
+                                    onEdit={setEditing}
+                                    onUpdate={onUpdate}
+                                    onApprove={onApprove}
+                                    onReject={onRejectMany}
+                                  />
+                                </div>
+                                <div>
+                                  <AiOutputCell
+                                    outputs={day.outputs.filter((output) => output.target === 'contact_fact' && !isKeyDateOutput(output))}
+                                    editing={editing}
+                                    busy={busy}
+                                    onEdit={setEditing}
+                                    onUpdate={onUpdate}
+                                    onApprove={onApprove}
+                                    onReject={onRejectMany}
+                                  />
+                                </div>
+                                {(['value_log', 'todo', 'review_item'] as const).map((target) => (
+                                  <div key={target}>
+                                    <AiOutputCell
+                                      outputs={day.outputs.filter((output) => output.target === target)}
+                                      editing={editing}
+                                      busy={busy}
+                                      onEdit={setEditing}
+                                      onUpdate={onUpdate}
+                                      onApprove={onApprove}
+                                      onReject={onRejectMany}
+                                    />
+                                  </div>
+                                ))}
+                                <div className="ai-sub-actions">
+                                  {day.outputs.length > 0 && (
+                                    <>
+                                      <button
+                                        className="ai-primary-action"
+                                        disabled={busy || group.needsIdentity}
+                                        onClick={() => onApproveMany(day.outputs.map((output) => output.id))}
+                                      >
+                                        Approve day
+                                      </button>
+                                      <button
+                                        className="ai-secondary-action"
+                                        disabled={busy}
+                                        onClick={() => onRejectMany(day.outputs.map((output) => output.id))}
+                                      >
+                                        Omit day
+                                      </button>
+                                    </>
+                                  )}
+                                </div>
+                              </div>
                             </td>
-                            <td>
-                              <AiOutputCell
-                                outputs={day.outputs.filter(isKeyDateOutput)}
-                                editing={editing}
-                                busy={busy}
-                                onEdit={setEditing}
-                                onUpdate={onUpdate}
-                                onApprove={onApprove}
-                                onReject={onRejectMany}
-                              />
-                            </td>
-                            <td>
-                              <AiOutputCell
-                                outputs={day.outputs.filter((output) => output.target === 'contact_fact' && !isKeyDateOutput(output))}
-                                editing={editing}
-                                busy={busy}
-                                onEdit={setEditing}
-                                onUpdate={onUpdate}
-                                onApprove={onApprove}
-                                onReject={onRejectMany}
-                              />
-                            </td>
-                            {(['value_log', 'todo', 'review_item'] as const).map((target) => (
-                              <td key={target}>
-                                <AiOutputCell
-                                  outputs={day.outputs.filter((output) => output.target === target)}
-                                  editing={editing}
-                                  busy={busy}
-                                  onEdit={setEditing}
-                                  onUpdate={onUpdate}
-                                  onApprove={onApprove}
-                                  onReject={onRejectMany}
-                                />
-                              </td>
-                            ))}
-                            <td />
                           </tr>
                         )}
                       </Fragment>
@@ -877,8 +915,13 @@ function AiOutputCell({
     <div className="ai-cell-stack">
       {outputs.map((output) => {
         const draft = editing[output.id] ?? output.body ?? ''
+        const classification = outputClassification(output)
         return (
           <div key={output.id} className={`ai-cell-item ai-row-${output.status}`}>
+            <div className="ai-classification">
+              <span>{classification.label}</span>
+              {classification.detail && <small>{classification.detail}</small>}
+            </div>
             <textarea
               value={draft}
               disabled={output.status === 'synced'}
@@ -969,6 +1012,54 @@ function aiReviewGroups(outputs: AiStagedOutput[], issues: SyncIssue[]): AiRevie
   })
 }
 
+function outputPayload(output: AiStagedOutput): Record<string, unknown> {
+  try {
+    return JSON.parse(output.payload_json) as Record<string, unknown>
+  } catch {
+    return {}
+  }
+}
+
+function outputClassification(output: AiStagedOutput): { label: string; detail: string | null } {
+  const payload = outputPayload(output)
+  if (output.target === 'interaction') {
+    return { label: 'Will write: activity log', detail: 'interactions + whatsapp window' }
+  }
+  if (output.target === 'contact_fact') {
+    if (isKeyDateOutput(output)) {
+      const eventType = String(payload.event_type ?? payload.label ?? 'key date')
+      const subject = String(payload.subject ?? payload.relation ?? '').trim()
+      return {
+        label: 'Will write: key date',
+        detail: subject ? `${eventType} for ${subject}` : 'contact_key_dates',
+      }
+    }
+    return {
+      label: 'Will write: contact fact',
+      detail: String(payload.category ?? payload.label ?? 'contact_facts'),
+    }
+  }
+  if (output.target === 'value_log') {
+    return {
+      label: 'Will write: value log',
+      detail: String(payload.type ?? payload.direction ?? 'value_logs'),
+    }
+  }
+  if (output.target === 'todo') {
+    return {
+      label: 'Will write: todo',
+      detail: String(payload.date ?? output.interaction_date ?? 'todos'),
+    }
+  }
+  const proposedTarget = String(payload.proposed_target ?? 'unknown target')
+  const proposedPayload = (payload.proposed_payload ?? {}) as Record<string, unknown>
+  const proposedType = String(proposedPayload.category ?? proposedPayload.type ?? proposedPayload.source_kind ?? 'manual review')
+  return {
+    label: `Needs review: ${proposedTarget}`,
+    detail: proposedType,
+  }
+}
+
 function formatSyncAgo(timestamp: number) {
   const minutes = Math.max(0, Math.round((Date.now() - timestamp) / 60000))
   if (minutes < 1) return 'now'
@@ -1037,6 +1128,7 @@ function Body({
   onApproveAllStagedOutputs,
   onRejectStagedOutputs,
   onResolveIssue,
+  onDismissIssue,
 }: {
   context: SidebarContext
   personLookup: PersonLookupState
@@ -1051,6 +1143,7 @@ function Body({
   onApproveAllStagedOutputs: () => Promise<void>
   onRejectStagedOutputs: (ids: number[]) => Promise<void>
   onResolveIssue: (issue: SyncIssue) => void
+  onDismissIssue: (issueKey: string) => void
 }) {
   if (context.tab === 'ai') {
     return (
@@ -1064,6 +1157,7 @@ function Body({
         onApproveMany={onApproveStagedOutputs}
         onRejectMany={onRejectStagedOutputs}
         onResolveIssue={onResolveIssue}
+        onDismissIssue={onDismissIssue}
       />
     )
   }

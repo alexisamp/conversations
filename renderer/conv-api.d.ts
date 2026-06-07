@@ -231,6 +231,7 @@ export type AiStagedOutput = {
   interaction_date: string | null
   title: string | null
   body: string | null
+  payload_json: string
   status: 'pending' | 'approved' | 'rejected' | 'synced' | 'failed'
   supabase_id: string | null
   error: string | null

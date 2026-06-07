@@ -92,6 +92,16 @@ function localDate(ms: number): string {
   }).format(new Date(ms))
 }
 
+function formatIssueTimestamp(ms: number): string {
+  return new Intl.DateTimeFormat('en-US', {
+    timeZone: TZ,
+    month: 'short',
+    day: '2-digit',
+    hour: 'numeric',
+    minute: '2-digit',
+  }).format(new Date(ms))
+}
+
 function phoneFromChatId(chatId: string): string | null {
   const user = chatId.split('@')[0] || ''
   return /^\d{7,16}$/.test(user) ? `+${user}` : null
@@ -363,6 +373,7 @@ export class DailyInsightRunner {
         })
 
         if (!contactId) {
+          if (this.isDismissedIdentityIssue(win.chatId)) continue
           await this.createIdentityReviewItem(win)
           this.openIdentityIssue(win)
           continue
@@ -769,7 +780,7 @@ export class DailyInsightRunner {
     if (!user) return
     await this.createReviewItem(user.id, `wa-identity:${win.chatId}`, {
       title: `Link WhatsApp chat: ${win.chatName ?? win.phone ?? win.chatId}`,
-      body: 'This 1:1 WhatsApp chat needs to be linked to a reThink contact before AI outputs can be written.',
+      body: this.identityIssueDetail(win),
       proposed_target: 'interaction',
       contact_id: null,
       proposed_payload: {
@@ -783,6 +794,30 @@ export class DailyInsightRunner {
         message_count: win.messages.length,
       },
     })
+  }
+
+  private isDismissedIdentityIssue(chatId: string): boolean {
+    const issueKey = `bridge-identity:${chatId}`
+    const row = getDb()
+      .prepare('SELECT status FROM sync_issues WHERE issue_key = ?')
+      .get(issueKey) as { status: string } | undefined
+    return row?.status === 'dismissed'
+  }
+
+  private identityIssueDetail(win: Window): string {
+    const first = win.messages[0]
+    const last = win.messages[win.messages.length - 1]
+    const range = first && last
+      ? `${formatIssueTimestamp(first.timestamp_ms)} - ${formatIssueTimestamp(last.timestamp_ms)}`
+      : 'No timestamp'
+    const phone = win.phone ? `Phone: ${win.phone}. ` : ''
+    const samples = win.messages.slice(-4).map((message) => {
+      const speaker = message.direction === 'outbound' ? 'Me' : (message.chat_name || message.sender || 'Them')
+      const text = (message.text || `[${message.media_type || 'media'}]`).replace(/\s+/g, ' ').trim()
+      return `${formatIssueTimestamp(message.timestamp_ms)} ${speaker}: ${text.slice(0, 180)}`
+    })
+    const preview = samples.length ? `\nRecent context:\n${samples.join('\n')}` : '\nRecent context: no text messages captured yet.'
+    return `${phone}${win.messages.length} message${win.messages.length === 1 ? '' : 's'} captured, ${range}. Link/create the contact once; Conversations will backfill previous local messages automatically.${preview}`
   }
 
   private async createReviewItem(
@@ -825,6 +860,11 @@ export class DailyInsightRunner {
   private openIdentityIssue(win: Window): void {
     const db = getDb()
     const now = Date.now()
+    const issueKey = `bridge-identity:${win.chatId}`
+    const existing = db
+      .prepare('SELECT status FROM sync_issues WHERE issue_key = ?')
+      .get(issueKey) as { status: string } | undefined
+    if (existing?.status === 'dismissed') return
     db.prepare(`
       INSERT INTO sync_issues
         (issue_key, kind, severity, title, detail, chat_key, contact_id, status, created_at, updated_at)
@@ -838,9 +878,9 @@ export class DailyInsightRunner {
         updated_at = excluded.updated_at,
         resolved_at = NULL
     `).run(
-      `bridge-identity:${win.chatId}`,
+      issueKey,
       win.chatName ?? win.phone ?? 'Unmatched WhatsApp chat',
-      'Link or create this person once; Conversations will backfill previous messages automatically.',
+      this.identityIssueDetail(win),
       win.chatId,
       now,
       now,

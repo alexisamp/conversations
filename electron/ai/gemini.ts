@@ -153,14 +153,18 @@ function fallbackExtraction(conversationText: string): WhatsappInsightExtraction
 }
 
 function normalizeValueLogs(valueLogs: WhatsappInsightExtraction['value_logs']): WhatsappInsightExtraction['value_logs'] {
-  const allowed = new Set(['introduction', 'content', 'referral', 'opportunity'])
+  const allowed = new Set<WhatsappInsightExtraction['value_logs'][number]['type']>(['introduction', 'content', 'referral', 'opportunity'])
   return valueLogs
     .filter((value) => value.description?.trim())
-    .map((value) => ({
-      type: allowed.has(value.type) ? value.type : 'content',
-      direction: value.direction === 'received' ? 'received' : 'given',
-      description: value.description.trim(),
-    }))
+    .map((value) => {
+      const type: WhatsappInsightExtraction['value_logs'][number]['type'] = allowed.has(value.type) ? value.type : 'content'
+      const direction: WhatsappInsightExtraction['value_logs'][number]['direction'] = value.direction === 'received' ? 'received' : 'given'
+      return {
+        type,
+        direction,
+        description: value.description.trim(),
+      }
+    })
     .filter((value) => {
       const text = value.description.toLowerCase()
       if (/\b(posiblemente|quizás|quizas|tal vez|parece|podría|podria)\b/i.test(text)) return false
@@ -178,7 +182,7 @@ function normalizeValueLogs(valueLogs: WhatsappInsightExtraction['value_logs']):
 }
 
 function normalizeContactFacts(facts: WhatsappInsightExtraction['contact_facts']): WhatsappInsightExtraction['contact_facts'] {
-  const allowed = new Set([
+  const allowed = new Set<WhatsappInsightExtraction['contact_facts'][number]['category']>([
     'key_date',
     'family',
     'career_intel',
@@ -192,18 +196,23 @@ function normalizeContactFacts(facts: WhatsappInsightExtraction['contact_facts']
   ])
   return facts
     .filter((fact) => fact.value?.trim())
-    .map((fact) => ({
-      category: allowed.has(fact.category) ? fact.category : 'other',
-      label: fact.label,
-      value: fact.value.trim(),
-      importance: fact.importance === 3 || fact.importance === 1 ? fact.importance : 2,
-      needs_review: Boolean(fact.needs_review),
-      event_type: fact.event_type ?? null,
-      subject: fact.subject ?? null,
-      relation: fact.relation ?? null,
-      date_value: fact.date_value ?? null,
-      date_precision: fact.date_precision ?? null,
-    }))
+    .map((fact) => {
+      const category: WhatsappInsightExtraction['contact_facts'][number]['category'] = allowed.has(fact.category) ? fact.category : 'other'
+      const importance: WhatsappInsightExtraction['contact_facts'][number]['importance'] =
+        fact.importance === 3 ? 3 : fact.importance === 1 ? 1 : 2
+      return {
+        category,
+        label: fact.label,
+        value: fact.value.trim(),
+        importance,
+        needs_review: Boolean(fact.needs_review),
+        event_type: fact.event_type ?? null,
+        subject: fact.subject ?? null,
+        relation: fact.relation ?? null,
+        date_value: fact.date_value ?? null,
+        date_precision: fact.date_precision ?? null,
+      }
+    })
     .map((fact) => {
       const text = `${fact.label ?? ''} ${fact.value}`.toLowerCase()
       if (/\b(cumpleaños|birthday|aniversario|anniversary|fecha importante|nació|nacimiento|vuelve|regresa|sale de viaje|vacaciones|viaje|mudanza|se muda|se mudó|se mudo)\b/i.test(text)) {
