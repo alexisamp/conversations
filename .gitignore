@@ -9,3 +9,4 @@ out/
 # Electron build artifacts
 build/
 release/
+supabase/.temp/

@@ -737,11 +737,11 @@ async function resolveBridgeChatContact(input: {
   waName: string | null
 }): Promise<string | null> {
   const supabase = getSupabase()
-  const identifiers = new Set<string>([`jid:${input.chatId}`, input.chatId])
-  if (input.waName?.trim()) identifiers.add(`waname:${input.waName.trim()}`)
-  if (input.phone) {
-    for (const variant of phoneVariants(input.phone)) identifiers.add(variant)
-  }
+  const identifiers = whatsappBridgeIdentifiers({
+    chat_id: input.chatId,
+    phone: input.phone,
+    wa_name: input.waName,
+  })
 
   const { data: channel } = await supabase
     .from('contact_channels')
@@ -755,6 +755,28 @@ async function resolveBridgeChatContact(input: {
   return null
 }
 
+function whatsappBridgeIdentifiers(input: {
+  chat_id: string
+  phone: string | null
+  wa_name: string | null
+}): string[] {
+  const identifiers = new Set<string>()
+  const chatId = input.chat_id.trim()
+  if (chatId) {
+    identifiers.add(chatId)
+    identifiers.add(`jid:${chatId}`)
+    const chatUser = chatId.split('@')[0] || ''
+    if (/^\d{7,16}$/.test(chatUser)) {
+      for (const variant of phoneVariants(`+${chatUser}`)) identifiers.add(variant)
+    }
+  }
+  if (input.phone?.trim()) {
+    for (const variant of phoneVariants(input.phone.trim())) identifiers.add(variant)
+  }
+  if (input.wa_name?.trim()) identifiers.add(`waname:${input.wa_name.trim()}`)
+  return [...identifiers].filter(Boolean)
+}
+
 async function linkBridgeChatToContact(input: {
   chat_id: string
   contact_id: string
@@ -763,31 +785,35 @@ async function linkBridgeChatToContact(input: {
 }): Promise<{ ok: true } | { ok: false; error: string }> {
   try {
     const supabase = getSupabase()
-    const identifier = input.phone || `jid:${input.chat_id}`
-    const { data: existing } = await supabase
+    const identifiers = whatsappBridgeIdentifiers(input)
+    const { data: existingRows, error: lookupError } = await supabase
       .from('contact_channels')
-      .select('outreach_log_id')
+      .select('outreach_log_id, channel_identifier')
       .eq('channel', 'whatsapp')
-      .eq('channel_identifier', identifier)
-      .maybeSingle()
-    if (existing && existing.outreach_log_id !== input.contact_id) {
+      .in('channel_identifier', identifiers)
+    if (lookupError) return { ok: false, error: lookupError.message }
+    const existing = (existingRows ?? []) as Array<{ outreach_log_id: string; channel_identifier: string }>
+    if (existing.some((row) => row.outreach_log_id !== input.contact_id)) {
       return { ok: false, error: 'This WhatsApp chat is already linked to another contact.' }
     }
-    if (!existing) {
-      const { error } = await supabase.from('contact_channels').insert({
+    const existingIdentifiers = new Set(existing.map((row) => row.channel_identifier))
+    const missingIdentifiers = identifiers.filter((identifier) => !existingIdentifiers.has(identifier))
+    if (missingIdentifiers.length > 0) {
+      const { error } = await supabase.from('contact_channels').insert(missingIdentifiers.map((identifier) => ({
         outreach_log_id: input.contact_id,
         channel: 'whatsapp',
         channel_identifier: identifier,
-        channel_name: input.wa_name,
+        channel_name: input.wa_name?.trim() || null,
         verified: true,
-      })
+      })))
       if (error && error.code !== '23505') return { ok: false, error: error.message }
-    } else if (input.wa_name?.trim()) {
+    }
+    if (input.wa_name?.trim()) {
       await supabase
         .from('contact_channels')
         .update({ channel_name: input.wa_name.trim() })
         .eq('channel', 'whatsapp')
-        .eq('channel_identifier', identifier)
+        .in('channel_identifier', identifiers)
         .eq('outreach_log_id', input.contact_id)
     }
 

@@ -118,6 +118,14 @@ export type WhatsappInsightExtraction = {
     type: 'introduction' | 'content' | 'referral' | 'opportunity'
     direction: 'given' | 'received'
     description: string
+    introduced_person_name?: string | null
+    introduced_person_company?: string | null
+    introduced_to_name?: string | null
+    introduced_to_company?: string | null
+    connector_name?: string | null
+    relationship_context?: string | null
+    introduction_status?: 'requested' | 'offered' | 'made' | 'received' | null
+    confidence?: 'low' | 'medium' | 'high' | null
   }>
   todos: Array<{
     text: string
@@ -154,15 +162,36 @@ function fallbackExtraction(conversationText: string): WhatsappInsightExtraction
 
 function normalizeValueLogs(valueLogs: WhatsappInsightExtraction['value_logs']): WhatsappInsightExtraction['value_logs'] {
   const allowed = new Set<WhatsappInsightExtraction['value_logs'][number]['type']>(['introduction', 'content', 'referral', 'opportunity'])
+  const allowedStatus = new Set(['requested', 'offered', 'made', 'received'])
+  const allowedConfidence = new Set(['low', 'medium', 'high'])
+  const clean = (value: unknown): string | null => {
+    if (typeof value !== 'string') return null
+    const trimmed = value.trim()
+    return trimmed || null
+  }
   return valueLogs
     .filter((value) => value.description?.trim())
     .map((value) => {
       const type: WhatsappInsightExtraction['value_logs'][number]['type'] = allowed.has(value.type) ? value.type : 'content'
       const direction: WhatsappInsightExtraction['value_logs'][number]['direction'] = value.direction === 'received' ? 'received' : 'given'
+      const introductionStatus = typeof value.introduction_status === 'string' && allowedStatus.has(value.introduction_status)
+        ? value.introduction_status
+        : null
+      const confidence = typeof value.confidence === 'string' && allowedConfidence.has(value.confidence)
+        ? value.confidence
+        : null
       return {
         type,
         direction,
         description: value.description.trim(),
+        introduced_person_name: clean(value.introduced_person_name),
+        introduced_person_company: clean(value.introduced_person_company),
+        introduced_to_name: clean(value.introduced_to_name),
+        introduced_to_company: clean(value.introduced_to_company),
+        connector_name: clean(value.connector_name),
+        relationship_context: clean(value.relationship_context),
+        introduction_status: introductionStatus,
+        confidence,
       }
     })
     .filter((value) => {
@@ -307,6 +336,13 @@ export async function extractWhatsappInsights(input: {
     '- referral: se derivó/recomendó una persona para una oportunidad concreta.',
     '- opportunity: se compartió una oportunidad, lead, trabajo, cliente o deal concreto.',
     '- content también puede usarse para info relevante NO pública y accionable, pero la descripción debe empezar con "Info no pública:".',
+    'Para introduction/referral, captura relaciones estructuradas cuando el texto lo permita:',
+    '- connector_name: quien está haciendo o facilitando la conexión. Si soy yo, usa "me".',
+    '- introduced_person_name/company: persona u organización presentada/recomendada.',
+    '- introduced_to_name/company: destinatario de la intro o quien recibe la recomendación.',
+    '- relationship_context: por qué la conexión importa, en pocas palabras.',
+    '- introduction_status: requested si alguien pidió la intro, offered si se ofreció, made si la intro ya ocurrió, received si me presentaron a mí.',
+    '- confidence: high solo si los nombres/roles son claros; medium si falta empresa/contexto; low si requiere revisión.',
     'NO es value: apoyo emocional, ánimo, opinión, coordinación familiar, logística, bromas, consejos genéricos, cariño, pagos cotidianos, disponibilidad o conversación normal.',
     'todos también es estricto: solo compromisos/follow-ups relevantes para CRM, carrera, proyecto, intro, documento, reunión, oportunidad o relación profesional/personal significativa.',
     'NO es todo: comida, supermercado, traer cosas, sueño del bebé, fórmula, salud cotidiana, logística doméstica, avisar al salir/llegar o coordinación normal del día.',
@@ -324,7 +360,7 @@ export async function extractWhatsappInsights(input: {
     '  "next_step_date": "YYYY-MM-DD o null",',
     '  "next_step_owner": "me | them | null",',
     '  "contact_facts": [{"category":"key_date|family|career_intel|compensation|obsession|hot_button|life_phase|origin_story|preference|other","label":null|string,"value":"hecho durable, estable y útil","importance":1|2|3,"needs_review":true|false,"event_type":"birthday|anniversary|travel|return|move|important_date|null","subject":null|string,"relation":null|string,"date_value":null|string,"date_precision":"exact|month_day|month|year|unknown|null"}],',
-    '  "value_logs": [{"type":"introduction|content|referral|opportunity","direction":"given|received","description":"valor explícito, no conversación normal"}],',
+    '  "value_logs": [{"type":"introduction|content|referral|opportunity","direction":"given|received","description":"valor explícito, no conversación normal","introduced_person_name":null|string,"introduced_person_company":null|string,"introduced_to_name":null|string,"introduced_to_company":null|string,"connector_name":null|string,"relationship_context":null|string,"introduction_status":"requested|offered|made|received|null","confidence":"low|medium|high|null"}],',
     '  "todos": [{"text":"tarea concreta","date":"YYYY-MM-DD|null"}]',
     '}',
     '',

@@ -277,6 +277,31 @@ function sourceKey(win: Window): string {
   return `wa-bridge:${win.chatId}:${first.timestamp_ms}:${last.timestamp_ms}`
 }
 
+function compactName(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  const trimmed = value.trim()
+  return trimmed || null
+}
+
+function sameLooseName(a: unknown, b: unknown): boolean {
+  const left = compactName(a)
+  const right = compactName(b)
+  if (!left || !right) return false
+  return normalizeForKey(left) === normalizeForKey(right)
+}
+
+function hasIntroductionColumns(payload: Record<string, unknown>): boolean {
+  if (payload.type !== 'introduction' && payload.type !== 'referral') return false
+  return Boolean(
+    compactName(payload.connector_name) ||
+    compactName(payload.introduced_person_name) ||
+    compactName(payload.introduced_person_company) ||
+    compactName(payload.introduced_to_name) ||
+    compactName(payload.introduced_to_company) ||
+    compactName(payload.relationship_context),
+  )
+}
+
 export class DailyInsightRunner {
   constructor(private readonly options: DailyInsightRunnerOptions) {}
 
@@ -614,10 +639,20 @@ export class DailyInsightRunner {
           if (!value.description?.trim()) continue
           const payload = {
             outreach_log_id: contactId,
+            source_contact_id: contactId,
+            source_contact_name: win.chatName ?? win.phone ?? win.chatId,
             type: value.type || 'other',
             description: value.description,
             direction: value.direction || 'given',
             date: interactionDate,
+            introduced_person_name: value.introduced_person_name ?? null,
+            introduced_person_company: value.introduced_person_company ?? null,
+            introduced_to_name: value.introduced_to_name ?? null,
+            introduced_to_company: value.introduced_to_company ?? null,
+            connector_name: value.connector_name ?? null,
+            relationship_context: value.relationship_context ?? null,
+            introduction_status: value.introduction_status ?? null,
+            confidence: value.confidence ?? null,
           }
           const stagedId = stageAiOutput({
             run_id: runId,
@@ -833,6 +868,32 @@ export class DailyInsightRunner {
       }).select('id').single()
       if (error) throw new Error(error.message)
       supabaseId = data?.id ?? null
+      if (supabaseId && hasIntroductionColumns(payload)) {
+        const connectorContactId = sameLooseName(payload.connector_name, payload.source_contact_name)
+          ? payload.source_contact_id
+          : null
+        const { error: introError } = await supabase.from('contact_introductions').upsert({
+          user_id: user.id,
+          source_contact_id: payload.source_contact_id ?? payload.outreach_log_id,
+          connector_contact_id: connectorContactId,
+          introduced_contact_id: null,
+          introduced_to_contact_id: null,
+          connector_name: compactName(payload.connector_name),
+          introduced_person_name: compactName(payload.introduced_person_name),
+          introduced_person_company: compactName(payload.introduced_person_company),
+          introduced_to_name: compactName(payload.introduced_to_name),
+          introduced_to_company: compactName(payload.introduced_to_company),
+          relationship_context: compactName(payload.relationship_context) ?? compactName(payload.description),
+          status: compactName(payload.introduction_status) ?? 'made',
+          direction: payload.direction === 'received' ? 'received' : 'given',
+          confidence: compactName(payload.confidence) ?? 'medium',
+          source_channel: 'whatsapp',
+          source_interaction_date: payload.date,
+          source_external_id: row.dedupe_key,
+          source_value_log_id: supabaseId,
+        }, { onConflict: 'user_id,source_external_id' })
+        if (introError) throw new Error(`contact_introductions insert failed: ${introError.message}`)
+      }
     } else if (row.target === 'todo') {
       const { data, error } = await supabase.from('todos').insert({
         user_id: user.id,

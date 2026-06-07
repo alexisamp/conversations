@@ -835,31 +835,34 @@ async function ensureWhatsappChannel(input: {
   waName: string | null
 }): Promise<WriteResult> {
   const supabase = getSupabase()
-  const { data: existing, error: lookupError } = await supabase
+  const identifiers = whatsappChannelIdentifiers(input.identifier, input.waName)
+  const { data: existingRows, error: lookupError } = await supabase
     .from('contact_channels')
-    .select('outreach_log_id')
+    .select('outreach_log_id, channel_identifier')
     .eq('channel', 'whatsapp')
-    .eq('channel_identifier', input.identifier)
-    .maybeSingle()
+    .in('channel_identifier', identifiers)
   if (lookupError) return { ok: false, error: lookupError.message }
-  if (existing) {
-    if ((existing.outreach_log_id as string) === input.contact_id) {
-      dismissLocalIdentityIssues(input)
-      return { ok: true }
-    }
+  const existing = (existingRows ?? []) as Array<{ outreach_log_id: string; channel_identifier: string }>
+  if (existing.some((row) => row.outreach_log_id !== input.contact_id)) {
     return {
       ok: false,
       error: 'This WhatsApp identifier is already linked to another reThink contact.',
     }
   }
+  const existingIdentifiers = new Set(existing.map((row) => row.channel_identifier))
+  const missingIdentifiers = identifiers.filter((identifier) => !existingIdentifiers.has(identifier))
+  if (missingIdentifiers.length === 0) {
+    dismissLocalIdentityIssues(input)
+    return { ok: true }
+  }
 
-  const { error } = await supabase.from('contact_channels').insert({
+  const { error } = await supabase.from('contact_channels').insert(missingIdentifiers.map((identifier) => ({
     outreach_log_id: input.contact_id,
     channel: 'whatsapp',
-    channel_identifier: input.identifier,
-    channel_name: input.waName,
+    channel_identifier: identifier,
+    channel_name: input.waName?.trim() || null,
     verified: true,
-  })
+  })))
   if (error) {
     if (error.code === '23505') {
       dismissLocalIdentityIssues(input)
@@ -870,6 +873,27 @@ async function ensureWhatsappChannel(input: {
   }
   dismissLocalIdentityIssues(input)
   return { ok: true }
+}
+
+function whatsappChannelIdentifiers(identifier: string, waName: string | null): string[] {
+  const identifiers = new Set<string>()
+  const trimmed = identifier.trim()
+  if (trimmed) identifiers.add(trimmed)
+
+  if (/^\+?\d{7,16}$/.test(trimmed)) {
+    for (const variant of phoneVariants(trimmed)) identifiers.add(variant)
+  }
+
+  if (trimmed.includes('@')) {
+    identifiers.add(`jid:${trimmed}`)
+    const user = trimmed.split('@')[0] || ''
+    if (/^\d{7,16}$/.test(user)) {
+      for (const variant of phoneVariants(`+${user}`)) identifiers.add(variant)
+    }
+  }
+
+  if (waName?.trim()) identifiers.add(`waname:${waName.trim()}`)
+  return [...identifiers].filter(Boolean)
 }
 
 function dismissLocalIdentityIssues(input: {
