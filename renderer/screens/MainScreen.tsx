@@ -592,32 +592,56 @@ function AiReviewTable({
   )
   const pending = visibleOutputs.filter((output) => output.status === 'pending' || output.status === 'failed')
   const groups = aiReviewGroups(visibleOutputs, identityIssues)
+  const linkedCount = groups.filter((group) => group.contactId).length
+  const identityCount = groups.filter((group) => group.needsIdentity).length
 
   return (
     <section className="ai-review ai-review-page">
       <header className="ai-review-header">
         <div>
-          <div className="sync-drawer-eyebrow">AI proposals</div>
+          <div className="sync-drawer-eyebrow">WhatsApp AI</div>
           <h2>Review before reThink</h2>
           <p>
-            {pending.length} pending rows across {groups.length} people/chats. Expand a person to review daily AI outputs.
+            Structured writes stay local until you approve the person.
           </p>
         </div>
         <div className="ai-review-actions">
           <button className="ghost" onClick={onRefresh} disabled={busy}>Refresh</button>
         </div>
       </header>
+      <div className="ai-review-toolbar">
+        <div className="ai-view-chip">
+          <span className="ai-view-icon">▦</span>
+          Pending writes
+        </div>
+        <div className="ai-toolbar-stat">
+          <strong>{groups.length}</strong>
+          <span>people</span>
+        </div>
+        <div className="ai-toolbar-stat">
+          <strong>{pending.length}</strong>
+          <span>rows</span>
+        </div>
+        <div className="ai-toolbar-stat">
+          <strong>{linkedCount}</strong>
+          <span>linked</span>
+        </div>
+        <div className="ai-toolbar-stat ai-toolbar-warning">
+          <strong>{identityCount}</strong>
+          <span>need identity</span>
+        </div>
+      </div>
       <div className="ai-review-table-wrap">
         <table className="ai-review-table ai-review-grouped">
           <thead>
             <tr>
-              <th>reThink</th>
-              <th>Days</th>
-              <th>Activity</th>
+              <th>Person</th>
+              <th>Status</th>
+              <th>This review</th>
               <th>Facts</th>
               <th>Value</th>
               <th>Todos</th>
-              <th>Review</th>
+              <th>Needs review</th>
               <th>Actions</th>
             </tr>
           </thead>
@@ -629,75 +653,92 @@ function AiReviewTable({
             ) : (
               groups.map((group) => {
                 const isOpen = expanded[group.key] ?? group.needsIdentity
+                const preview = aiGroupPreview(group)
                 return (
                   <Fragment key={group.key}>
-                    <tr key={group.key} className={group.needsIdentity ? 'ai-row-failed' : 'ai-row-pending'}>
+                    <tr key={group.key} className={`ai-person-row ${group.needsIdentity ? 'ai-row-failed' : 'ai-row-pending'}`}>
                       <td className="ai-person-cell">
                         <button
                           className="ai-expand"
+                          aria-label={isOpen ? 'Collapse person' : 'Expand person'}
                           onClick={() =>
                             setExpanded((current) => ({ ...current, [group.key]: !isOpen }))
                           }
                         >
                           {isOpen ? '−' : '+'}
                         </button>
-                        <strong>{group.title}</strong>
-                        <span>{group.contactId ? '✓ linked to reThink' : '○ not linked'}</span>
+                        <div className="ai-avatar">{initials(group.title)}</div>
+                        <div className="ai-person-copy">
+                          <strong>{group.title}</strong>
+                          <span>{group.days.length} observed day{group.days.length === 1 ? '' : 's'}</span>
+                        </div>
                       </td>
-                      <td>{group.days.length}</td>
-                      <td>{group.counts.interaction}</td>
-                      <td>{group.counts.contact_fact}</td>
-                      <td>{group.counts.value_log}</td>
-                      <td>{group.counts.todo}</td>
-                      <td>{group.counts.review_item}</td>
                       <td>
-                        {group.outputs.length > 0 && (
-                          <>
+                        <span className={`ai-link-badge ${group.contactId ? 'ai-linked' : 'ai-unlinked'}`}>
+                          <span className="ai-status-dot" />
+                          {group.contactId ? 'linked' : 'not linked'}
+                        </span>
+                      </td>
+                      <td>
+                        <div className="ai-review-preview">
+                          <span>{preview || 'No proposed writes yet'}</span>
+                        </div>
+                      </td>
+                      <td>{countBadge(group.counts.contact_fact, 'fact')}</td>
+                      <td>{countBadge(group.counts.value_log, 'value')}</td>
+                      <td>{countBadge(group.counts.todo, 'todo')}</td>
+                      <td>{countBadge(group.counts.review_item, 'review')}</td>
+                      <td>
+                        <div className="ai-row-actions">
+                          {group.outputs.length > 0 && (
+                            <>
                             <button
-                              className="ghost"
+                              className="ai-primary-action"
                               disabled={busy || group.needsIdentity}
                               onClick={() => onApproveMany(group.outputs.map((output) => output.id))}
                             >
-                              Approve contact
+                              Approve
                             </button>
                             <button
-                              className="ghost"
+                              className="ai-secondary-action"
                               disabled={busy}
                               onClick={() => onRejectMany(group.outputs.map((output) => output.id))}
                             >
                               Omit
                             </button>
-                          </>
-                        )}
-                        {group.issue && (
-                          <button className="ghost" onClick={() => onResolveIssue(group.issue!)}>
-                            Link/create
-                          </button>
-                        )}
+                            </>
+                          )}
+                          {group.issue && (
+                            <button className="ai-primary-action" onClick={() => onResolveIssue(group.issue!)}>
+                              Link
+                            </button>
+                          )}
+                        </div>
                       </td>
                     </tr>
                     {isOpen && group.days.map((day) => (
                       <Fragment key={`${group.key}:${day.date}`}>
                         <tr key={`${group.key}:${day.date}`} className="ai-day-row">
-                          <td>
-                            <strong>{day.date}</strong>
-                            <span>{day.outputs.length} proposed writes</span>
+                          <td colSpan={8}>
+                            <div className="ai-day-label">
+                              <strong>{day.date}</strong>
+                              <span>{day.outputs.length} proposed write{day.outputs.length === 1 ? '' : 's'}</span>
+                            </div>
                           </td>
-                          <td />
-                          <td colSpan={6} />
                         </tr>
                         {day.outputs.length === 0 && group.issue ? (
                           <tr key={`${group.key}:${day.date}:issue`} className="ai-output-row">
                             <td />
                             <td colSpan={6}>Link this chat to reThink before AI can write structured rows.</td>
                             <td>
-                              <button className="ghost" onClick={() => onResolveIssue(group.issue!)}>
+                              <button className="ai-primary-action" onClick={() => onResolveIssue(group.issue!)}>
                                 Resolve
                               </button>
                             </td>
                           </tr>
                         ) : (
                           <tr key={`${group.key}:${day.date}:outputs`} className="ai-output-row">
+                            <td />
                             <td />
                             {(['interaction', 'contact_fact', 'value_log', 'todo', 'review_item'] as const).map((target) => (
                               <td key={target}>
@@ -726,6 +767,32 @@ function AiReviewTable({
       </div>
     </section>
   )
+}
+
+function initials(name: string) {
+  const parts = name
+    .replace(/[|].*$/, '')
+    .split(/\s+/)
+    .map((part) => part.trim())
+    .filter(Boolean)
+  const chars = parts.length >= 2 ? [parts[0][0], parts[1][0]] : [parts[0]?.[0], parts[0]?.[1]]
+  return chars.filter(Boolean).join('').toUpperCase() || 'WA'
+}
+
+function countBadge(count: number, label: string) {
+  if (!count) return <span className="ai-count-empty">no {label}</span>
+  return (
+    <span className="ai-count-badge">
+      <strong>{count}</strong>
+      {label}
+    </span>
+  )
+}
+
+function aiGroupPreview(group: AiReviewGroup) {
+  const first = group.outputs.find((output) => output.body?.trim())
+  if (group.needsIdentity && !first) return 'Needs identity before writes'
+  return first?.body?.trim() ?? ''
 }
 
 type AiReviewGroup = {
