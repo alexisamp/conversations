@@ -118,6 +118,20 @@ CREATE INDEX IF NOT EXISTS idx_ai_staged_outputs_status
 CREATE INDEX IF NOT EXISTS idx_ai_staged_outputs_contact
   ON ai_staged_outputs(contact_id, interaction_date DESC);
 
+CREATE TABLE IF NOT EXISTS ai_feedback (
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  staged_output_id  INTEGER,
+  target            TEXT NOT NULL,
+  contact_id        TEXT,
+  title             TEXT,
+  body              TEXT,
+  feedback          TEXT NOT NULL,
+  decision          TEXT NOT NULL CHECK (decision IN ('note','reject')),
+  created_at        INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
+);
+CREATE INDEX IF NOT EXISTS idx_ai_feedback_created
+  ON ai_feedback(created_at DESC);
+
 -- One row per 6h sliding-window conversation session.
 CREATE TABLE IF NOT EXISTS sessions (
   id                        INTEGER PRIMARY KEY AUTOINCREMENT,

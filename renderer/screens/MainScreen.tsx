@@ -180,6 +180,11 @@ export function MainScreen({ email }: { email: string }) {
     await refreshSync()
   }
 
+  async function addStagedOutputFeedback(id: number, feedback: string, decision: 'note' | 'reject') {
+    await window.conv.insights.addFeedback({ id, feedback, decision })
+    await refreshSync()
+  }
+
   async function approveStagedOutput(id: number) {
     setSyncBusy(true)
     try {
@@ -296,6 +301,7 @@ export function MainScreen({ email }: { email: string }) {
           onApproveStagedOutputs={approveStagedOutputs}
           onApproveAllStagedOutputs={approveAllStagedOutputs}
           onRejectStagedOutputs={rejectStagedOutputs}
+          onFeedbackStagedOutput={addStagedOutputFeedback}
           onResolveIssue={setResolvingIssue}
           onDismissIssue={dismissSyncIssue}
         />
@@ -329,6 +335,7 @@ export function MainScreen({ email }: { email: string }) {
             lid: null,
             waName: issueName(resolvingIssue),
             avatarDataUrl: null,
+            chatId: resolvingIssue.chat_key,
           }}
           onClose={() => setResolvingIssue(null)}
           onDone={async () => {
@@ -570,7 +577,9 @@ function AiReviewTable({
   onUpdate,
   onApprove,
   onApproveMany,
+  onApproveAll,
   onRejectMany,
+  onFeedback,
   onResolveIssue,
   onDismissIssue,
 }: {
@@ -581,7 +590,9 @@ function AiReviewTable({
   onUpdate: (id: number, body: string) => Promise<void>
   onApprove: (id: number) => Promise<void>
   onApproveMany: (ids: number[]) => Promise<void>
+  onApproveAll: () => Promise<void>
   onRejectMany: (ids: number[]) => Promise<void>
+  onFeedback: (id: number, feedback: string, decision: 'note' | 'reject') => Promise<void>
   onResolveIssue: (issue: SyncIssue) => void
   onDismissIssue: (issueKey: string) => void
 }) {
@@ -609,6 +620,13 @@ function AiReviewTable({
           </p>
         </div>
         <div className="ai-review-actions">
+          <button
+            className="primary"
+            onClick={onApproveAll}
+            disabled={busy || pending.length === 0}
+          >
+            Approve all
+          </button>
           <button className="ghost" onClick={onRefresh} disabled={busy}>Refresh</button>
         </div>
       </header>
@@ -656,7 +674,7 @@ function AiReviewTable({
               </tr>
             ) : (
               groups.map((group) => {
-                const isOpen = expanded[group.key] ?? group.needsIdentity
+                const isOpen = expanded[group.key] ?? false
                 const preview = aiGroupPreview(group)
                 return (
                   <Fragment key={group.key}>
@@ -768,6 +786,7 @@ function AiReviewTable({
                                     onUpdate={onUpdate}
                                     onApprove={onApprove}
                                     onReject={onRejectMany}
+                                    onFeedback={onFeedback}
                                   />
                                 </div>
                                 <div>
@@ -779,6 +798,7 @@ function AiReviewTable({
                                     onUpdate={onUpdate}
                                     onApprove={onApprove}
                                     onReject={onRejectMany}
+                                    onFeedback={onFeedback}
                                   />
                                 </div>
                                 <div>
@@ -790,6 +810,7 @@ function AiReviewTable({
                                     onUpdate={onUpdate}
                                     onApprove={onApprove}
                                     onReject={onRejectMany}
+                                    onFeedback={onFeedback}
                                   />
                                 </div>
                                 {(['value_log', 'todo', 'review_item'] as const).map((target) => (
@@ -802,6 +823,7 @@ function AiReviewTable({
                                       onUpdate={onUpdate}
                                       onApprove={onApprove}
                                       onReject={onRejectMany}
+                                      onFeedback={onFeedback}
                                     />
                                   </div>
                                 ))}
@@ -901,6 +923,7 @@ function AiOutputCell({
   onUpdate,
   onApprove,
   onReject,
+  onFeedback,
 }: {
   outputs: AiStagedOutput[]
   editing: Record<number, string>
@@ -909,13 +932,18 @@ function AiOutputCell({
   onUpdate: (id: number, body: string) => Promise<void>
   onApprove: (id: number) => Promise<void>
   onReject: (ids: number[]) => Promise<void>
+  onFeedback: (id: number, feedback: string, decision: 'note' | 'reject') => Promise<void>
 }) {
+  const [feedbackOpen, setFeedbackOpen] = useState<Record<number, boolean>>({})
+  const [feedbackDraft, setFeedbackDraft] = useState<Record<number, string>>({})
   if (outputs.length === 0) return <span className="ai-empty-cell">—</span>
   return (
     <div className="ai-cell-stack">
       {outputs.map((output) => {
         const draft = editing[output.id] ?? output.body ?? ''
         const classification = outputClassification(output)
+        const feedback = feedbackDraft[output.id] ?? ''
+        const isFeedbackOpen = feedbackOpen[output.id] ?? false
         return (
           <div key={output.id} className={`ai-cell-item ai-row-${output.status}`}>
             <div className="ai-classification">
@@ -938,6 +966,15 @@ function AiOutputCell({
               <span>{output.status}</span>
               <button
                 className="ghost"
+                disabled={busy || output.status === 'synced'}
+                onClick={() =>
+                  setFeedbackOpen((current) => ({ ...current, [output.id]: !isFeedbackOpen }))
+                }
+              >
+                Feedback
+              </button>
+              <button
+                className="ghost"
                 disabled={busy || output.status === 'synced' || draft.trim().length === 0}
                 onClick={async () => {
                   if (draft !== (output.body ?? '')) await onUpdate(output.id, draft)
@@ -947,6 +984,39 @@ function AiOutputCell({
                 Approve
               </button>
             </div>
+            {isFeedbackOpen && (
+              <div className="ai-feedback-box">
+                <textarea
+                  value={feedback}
+                  placeholder="Ej: Esto no es value; solo cuenta si hay intro, archivo relevante, info no pública u oportunidad concreta."
+                  onChange={(event) =>
+                    setFeedbackDraft((current) => ({ ...current, [output.id]: event.target.value }))
+                  }
+                />
+                <div className="ai-feedback-actions">
+                  <button
+                    className="ai-secondary-action"
+                    disabled={busy || feedback.trim().length === 0}
+                    onClick={async () => {
+                      await onFeedback(output.id, feedback, 'note')
+                      setFeedbackOpen((current) => ({ ...current, [output.id]: false }))
+                    }}
+                  >
+                    Save feedback
+                  </button>
+                  <button
+                    className="ai-secondary-action"
+                    disabled={busy || feedback.trim().length === 0}
+                    onClick={async () => {
+                      await onFeedback(output.id, feedback, 'reject')
+                      setFeedbackOpen((current) => ({ ...current, [output.id]: false }))
+                    }}
+                  >
+                    Omit + teach
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         )
       })}
@@ -1127,6 +1197,7 @@ function Body({
   onApproveStagedOutputs,
   onApproveAllStagedOutputs,
   onRejectStagedOutputs,
+  onFeedbackStagedOutput,
   onResolveIssue,
   onDismissIssue,
 }: {
@@ -1142,6 +1213,7 @@ function Body({
   onApproveStagedOutputs: (ids: number[]) => Promise<void>
   onApproveAllStagedOutputs: () => Promise<void>
   onRejectStagedOutputs: (ids: number[]) => Promise<void>
+  onFeedbackStagedOutput: (id: number, feedback: string, decision: 'note' | 'reject') => Promise<void>
   onResolveIssue: (issue: SyncIssue) => void
   onDismissIssue: (issueKey: string) => void
 }) {
@@ -1155,7 +1227,9 @@ function Body({
         onUpdate={onUpdateStagedOutput}
         onApprove={onApproveStagedOutput}
         onApproveMany={onApproveStagedOutputs}
+        onApproveAll={onApproveAllStagedOutputs}
         onRejectMany={onRejectStagedOutputs}
+        onFeedback={onFeedbackStagedOutput}
         onResolveIssue={onResolveIssue}
         onDismissIssue={onDismissIssue}
       />

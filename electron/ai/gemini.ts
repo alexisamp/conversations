@@ -265,6 +265,7 @@ export async function extractWhatsappInsights(input: {
   conversationText: string
   interactionDate: string
   contactName?: string | null
+  feedbackGuidance?: string | null
 }): Promise<WhatsappInsightExtraction> {
   const apiKey = getApiKey()
   if (!input.conversationText.trim()) return fallbackExtraction(input.conversationText)
@@ -310,6 +311,9 @@ export async function extractWhatsappInsights(input: {
     'todos también es estricto: solo compromisos/follow-ups relevantes para CRM, carrera, proyecto, intro, documento, reunión, oportunidad o relación profesional/personal significativa.',
     'NO es todo: comida, supermercado, traer cosas, sueño del bebé, fórmula, salud cotidiana, logística doméstica, avisar al salir/llegar o coordinación normal del día.',
     'Si hay compromiso o siguiente paso concreto y relevante, va en todos y, si corresponde, también next_step.',
+    input.feedbackGuidance
+      ? `Feedback reciente del usuario. Úsalo como reglas de calibración para esta extracción:\n${input.feedbackGuidance}`
+      : '',
     `Fecha exacta de interacción: ${input.interactionDate}. Usa esa fecha para todos/tareas si no hay otra fecha explícita.`,
     input.contactName ? `Contacto: ${input.contactName}` : '',
     '',

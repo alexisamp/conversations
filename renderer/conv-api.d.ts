@@ -114,6 +114,7 @@ export type GroupParticipant = {
   lid: string | null
   waName: string | null
   avatarDataUrl: string | null
+  chatId?: string | null
 }
 
 export type ParticipantLookupInput = {
@@ -341,6 +342,11 @@ export type ConvApi = {
     approvePendingStagedOutputs(): Promise<{ ok: true; synced: number; failed: number }>
     approveStagedOutputs(ids: number[]): Promise<{ ok: true; synced: number; failed: number }>
     rejectStagedOutputs(ids: number[]): Promise<{ ok: true }>
+    addFeedback(input: {
+      id: number
+      feedback: string
+      decision: 'note' | 'reject'
+    }): Promise<{ ok: true } | { ok: false; error: string }>
   }
   identity: {
     linkChatToContact(input: {

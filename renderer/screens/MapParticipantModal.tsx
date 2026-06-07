@@ -101,6 +101,15 @@ export function MapParticipantModal({ participant, onClose, onDone }: Props) {
       return
     }
 
+    if (result.ok && participant.chatId) {
+      result = await window.conv.identity.linkChatToContact({
+        chat_id: participant.chatId,
+        contact_id: contact.id,
+        wa_name: contact.name || participant.waName,
+        phone: participant.phone,
+      })
+    }
+
     setSaving(false)
     if (result.ok) onDone()
     else setError(result.error)
@@ -138,6 +147,19 @@ export function MapParticipantModal({ participant, onClose, onDone }: Props) {
         contact_id: result.contactId,
         waName: participant.waName,
       })
+    }
+    if (result.ok && participant.chatId) {
+      const linkResult = await window.conv.identity.linkChatToContact({
+        chat_id: participant.chatId,
+        contact_id: result.contactId,
+        wa_name: createName.trim() || participant.waName,
+        phone: participant.phone,
+      })
+      if (!linkResult.ok) {
+        setSaving(false)
+        setError(linkResult.error)
+        return
+      }
     }
     setSaving(false)
     if (result.ok) onDone()

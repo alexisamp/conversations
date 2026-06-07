@@ -801,9 +801,10 @@ async function linkBridgeChatToContact(input: {
     )
     getDb().prepare(`
       UPDATE bridge_messages
-      SET contact_id = ?
+      SET contact_id = ?,
+          chat_name = COALESCE(NULLIF(?, ''), chat_name)
       WHERE chat_id = ? OR chat_name = ?
-    `).run(input.contact_id, input.chat_id, input.wa_name)
+    `).run(input.contact_id, input.wa_name, input.chat_id, input.wa_name)
 
     await insightRunner?.runChat(input.chat_id)
     phoneContactIdCache.clear()
@@ -1713,6 +1714,14 @@ function registerIpc(): void {
   ipcMain.handle('insights:reject-staged-outputs', (_event, ids: number[]) => {
     if (!insightRunner) throw new Error('Insight runner not ready')
     return insightRunner.rejectStagedOutputs(ids)
+  })
+  ipcMain.handle('insights:add-feedback', (_event, input: {
+    id: number
+    feedback: string
+    decision: 'note' | 'reject'
+  }) => {
+    if (!insightRunner) throw new Error('Insight runner not ready')
+    return insightRunner.addFeedback(input)
   })
   ipcMain.handle('identity:link-chat-to-contact', (_event, input: {
     chat_id: string

@@ -2024,6 +2024,22 @@ body {
   opacity: 0.45;
   cursor: not-allowed;
 }
+.ai-feedback-box {
+  margin-top: 5px;
+  padding-top: 5px;
+  border-top: 1px solid #edf0ed;
+}
+.ai-feedback-box textarea {
+  min-height: 48px;
+  max-height: 96px;
+  background: #fbfcfa;
+}
+.ai-feedback-actions {
+  display: flex;
+  gap: 5px;
+  margin-top: 4px;
+  flex-wrap: wrap;
+}
 .ai-empty-cell {
   display: inline-block;
   color: #c4ccd2;

@@ -2,6 +2,7 @@ import {
   bridgeMessagesForChat,
   bridgeMessagesForRange,
   bridgeMessagesForStructuredRepair,
+  addAiFeedback,
   createDailyAiRun,
   finishDailyAiRun,
   getAiOutput,
@@ -15,6 +16,7 @@ import {
   pruneSyncedBridgeMessages,
   recordAiOutput,
   recordAiRunOutput,
+  recentAiFeedback,
   stageAiOutput,
   updateAiStagedOutput,
   updateAiStagedOutputsStatus,
@@ -148,6 +150,50 @@ function factSemanticKey(contactId: string | null, category: string | null, valu
     .slice(0, 10)
     .join('-')
   return `${contactId}|${category ?? 'other'}|${compact}`
+}
+
+function inferKeyDateEvent(text: string): string | null {
+  if (/\b(cumpleanos|birthday|nacio|nacimiento)\b/.test(text)) return 'birthday'
+  if (/\b(aniversario|anniversary)\b/.test(text)) return 'anniversary'
+  if (/\b(vuelve|regresa)\b/.test(text)) return 'return'
+  if (/\b(viaje|vacaciones|sale de viaje|partida)\b/.test(text)) return 'travel'
+  if (/\b(mudanza|se muda|se mudo)\b/.test(text)) return 'move'
+  return null
+}
+
+function keyDateSemanticKey(input: {
+  contactId: string | null
+  title?: string | null
+  category?: string | null
+  eventType?: string | null
+  subject?: string | null
+  relation?: string | null
+  value?: string | null
+}): string | null {
+  if (!input.contactId) return null
+  const text = normalizeForKey(`${input.eventType ?? ''} ${input.subject ?? ''} ${input.relation ?? ''} ${input.value ?? ''}`)
+  const eventType = normalizeForKey(input.eventType ?? '') || inferKeyDateEvent(text)
+  if (input.category !== 'key_date' && !eventType) return null
+
+  const title = normalizeForKey(input.title ?? '')
+  const subject = normalizeForKey(input.subject ?? '')
+  const titleFirst = title.split(' ')[0] ?? ''
+  const subjectKey = !subject || (title && (title.includes(subject) || subject.includes(titleFirst)))
+    ? 'primary'
+    : subject
+  return `${input.contactId}|key_date|${eventType ?? 'important_date'}|${input.relation ?? 'contact'}|${subjectKey}`
+}
+
+function aiFeedbackGuidance(): string | null {
+  const rows = recentAiFeedback(20)
+  if (rows.length === 0) return null
+  return rows
+    .map((row) => {
+      const body = (row.body ?? '').replace(/\s+/g, ' ').slice(0, 180)
+      const feedback = row.feedback.replace(/\s+/g, ' ').slice(0, 220)
+      return `- ${row.decision.toUpperCase()} ${row.target}: "${body}" => ${feedback}`
+    })
+    .join('\n')
 }
 
 export function nextInsightRunAt(now = new Date()): number {
@@ -338,6 +384,31 @@ export class DailyInsightRunner {
     return { ok: true }
   }
 
+  addFeedback(input: {
+    id: number
+    feedback: string
+    decision: 'note' | 'reject'
+  }): { ok: true } | { ok: false; error: string } {
+    const row = getAiStagedOutput(input.id)
+    if (!row) return { ok: false, error: 'Staged output not found' }
+    const feedback = input.feedback.trim()
+    if (!feedback) return { ok: false, error: 'Feedback is empty' }
+    addAiFeedback({
+      staged_output_id: row.id,
+      target: row.target,
+      contact_id: row.contact_id,
+      title: row.title,
+      body: row.body,
+      feedback,
+      decision: input.decision,
+    })
+    if (input.decision === 'reject') {
+      updateAiStagedOutputsStatus([row.id], 'rejected')
+    }
+    this.options.publishStatus()
+    return { ok: true }
+  }
+
   private async runRange(startMs: number, endMs: number, reason: string): Promise<InsightRunResult> {
     const messages = bridgeMessagesForRange(startMs, endMs)
     return this.runMessages(messages, reason)
@@ -357,10 +428,27 @@ export class DailyInsightRunner {
     let outputsWritten = 0
     const counters = emptyCounters()
     const seenFactKeys = new Set<string>()
+    const seenKeyDateKeys = new Set<string>()
     for (const output of latestAiStagedOutputs(5000)) {
       if (output.target !== 'contact_fact' || output.status === 'rejected') continue
+      let payload: Record<string, unknown> = {}
+      try {
+        payload = JSON.parse(output.payload_json) as Record<string, unknown>
+      } catch {
+        payload = {}
+      }
       const key = factSemanticKey(output.contact_id, null, output.body ?? '')
       if (key) seenFactKeys.add(key)
+      const keyDateKey = keyDateSemanticKey({
+        contactId: output.contact_id,
+        title: output.title,
+        category: String(payload.category ?? ''),
+        eventType: payload.event_type ? String(payload.event_type) : null,
+        subject: payload.subject ? String(payload.subject) : null,
+        relation: payload.relation ? String(payload.relation) : null,
+        value: output.body ?? String(payload.value ?? ''),
+      })
+      if (keyDateKey) seenKeyDateKeys.add(keyDateKey)
     }
 
     try {
@@ -394,6 +482,7 @@ export class DailyInsightRunner {
           conversationText: conversationText(win.messages),
           interactionDate,
           contactName: win.chatName,
+          feedbackGuidance: aiFeedbackGuidance(),
         })
         let windowStructuredOutputs = 0
 
@@ -438,6 +527,17 @@ export class DailyInsightRunner {
 
         for (const fact of extraction.contact_facts.slice(0, 5)) {
           if (!fact.value?.trim()) continue
+          const semanticKeyDateKey = keyDateSemanticKey({
+            contactId,
+            title: win.chatName ?? win.phone ?? win.chatId,
+            category: fact.category,
+            eventType: fact.event_type,
+            subject: fact.subject,
+            relation: fact.relation,
+            value: fact.value,
+          })
+          if (semanticKeyDateKey && seenKeyDateKeys.has(semanticKeyDateKey)) continue
+          if (semanticKeyDateKey) seenKeyDateKeys.add(semanticKeyDateKey)
           const semanticFactKey = factSemanticKey(contactId, fact.category, fact.value)
           if (semanticFactKey && seenFactKeys.has(semanticFactKey)) continue
           if (semanticFactKey) seenFactKeys.add(semanticFactKey)
@@ -709,7 +809,7 @@ export class DailyInsightRunner {
         if (!keyDateError) {
           supabaseId = keyDate?.id ?? null
         } else {
-          console.warn('[daily-insights] contact_key_dates insert failed; falling back to contact_facts:', keyDateError.message)
+          throw new Error(`contact_key_dates insert failed: ${keyDateError.message}`)
         }
       }
       if (!supabaseId) {

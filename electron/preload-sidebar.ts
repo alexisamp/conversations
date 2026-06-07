@@ -119,6 +119,7 @@ export type GroupParticipant = {
   lid: string | null
   waName: string | null
   avatarDataUrl: string | null
+  chatId?: string | null
 }
 
 export type WaState =
@@ -368,6 +369,12 @@ const api = {
       ipcRenderer.invoke('insights:approve-staged-outputs', ids),
     rejectStagedOutputs: (ids: number[]): Promise<{ ok: true }> =>
       ipcRenderer.invoke('insights:reject-staged-outputs', ids),
+    addFeedback: (input: {
+      id: number
+      feedback: string
+      decision: 'note' | 'reject'
+    }): Promise<{ ok: true } | { ok: false; error: string }> =>
+      ipcRenderer.invoke('insights:add-feedback', input),
   },
   identity: {
     linkChatToContact: (input: {

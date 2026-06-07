@@ -163,6 +163,20 @@ function migrateLocalSchema(handle: Database.Database): void {
   `).run()
   handle.prepare('CREATE INDEX IF NOT EXISTS idx_ai_staged_outputs_status ON ai_staged_outputs(status, created_at DESC)').run()
   handle.prepare('CREATE INDEX IF NOT EXISTS idx_ai_staged_outputs_contact ON ai_staged_outputs(contact_id, interaction_date DESC)').run()
+  handle.prepare(`
+    CREATE TABLE IF NOT EXISTS ai_feedback (
+      id                INTEGER PRIMARY KEY AUTOINCREMENT,
+      staged_output_id  INTEGER,
+      target            TEXT NOT NULL,
+      contact_id        TEXT,
+      title             TEXT,
+      body              TEXT,
+      feedback          TEXT NOT NULL,
+      decision          TEXT NOT NULL CHECK (decision IN ('note','reject')),
+      created_at        INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
+    )
+  `).run()
+  handle.prepare('CREATE INDEX IF NOT EXISTS idx_ai_feedback_created ON ai_feedback(created_at DESC)').run()
 }
 
 // ─── Messages ────────────────────────────────────────────────────────
@@ -207,7 +221,15 @@ export function upsertBridgeMessages(inputs: BridgeMessageInput[]): number {
     VALUES
       (@wa_message_id, @chat_id, @chat_kind, @chat_name, @sender, @sender_phone, @direction, @text, @media_type, @timestamp_ms)
     ON CONFLICT(chat_id, wa_message_id) DO UPDATE SET
-      chat_name = excluded.chat_name,
+      chat_name = CASE
+        WHEN excluded.chat_name IS NULL OR trim(excluded.chat_name) = '' THEN bridge_messages.chat_name
+        WHEN (excluded.chat_name GLOB '[0-9]*' OR excluded.chat_name GLOB '+[0-9]*')
+          AND bridge_messages.chat_name IS NOT NULL
+          AND bridge_messages.chat_name NOT GLOB '[0-9]*'
+          AND bridge_messages.chat_name NOT GLOB '+[0-9]*'
+          THEN bridge_messages.chat_name
+        ELSE excluded.chat_name
+      END,
       sender = excluded.sender,
       sender_phone = excluded.sender_phone,
       text = excluded.text,
@@ -353,6 +375,18 @@ export type AiStagedOutputRow = {
   created_at: number
   updated_at: number
   confirmed_at: number | null
+}
+
+export type AiFeedbackRow = {
+  id: number
+  staged_output_id: number | null
+  target: string
+  contact_id: string | null
+  title: string | null
+  body: string | null
+  feedback: string
+  decision: 'note' | 'reject'
+  created_at: number
 }
 
 export function createDailyAiRun(input: {
@@ -605,6 +639,39 @@ export function countPendingAiStagedOutputs(): number {
     .prepare("SELECT COUNT(*) AS c FROM ai_staged_outputs WHERE status IN ('pending','failed')")
     .get() as { c: number }
   return row.c
+}
+
+export function addAiFeedback(input: {
+  staged_output_id?: number | null
+  target: string
+  contact_id?: string | null
+  title?: string | null
+  body?: string | null
+  feedback: string
+  decision: 'note' | 'reject'
+}): void {
+  getDb()
+    .prepare(`
+      INSERT INTO ai_feedback
+        (staged_output_id, target, contact_id, title, body, feedback, decision)
+      VALUES
+        (@staged_output_id, @target, @contact_id, @title, @body, @feedback, @decision)
+    `)
+    .run({
+      staged_output_id: input.staged_output_id ?? null,
+      target: input.target,
+      contact_id: input.contact_id ?? null,
+      title: input.title ?? null,
+      body: input.body ?? null,
+      feedback: input.feedback,
+      decision: input.decision,
+    })
+}
+
+export function recentAiFeedback(limit = 20): AiFeedbackRow[] {
+  return getDb()
+    .prepare('SELECT * FROM ai_feedback ORDER BY created_at DESC LIMIT ?')
+    .all(limit) as AiFeedbackRow[]
 }
 
 // ─── Sessions ────────────────────────────────────────────────────────
