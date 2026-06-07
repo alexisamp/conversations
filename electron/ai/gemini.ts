@@ -103,11 +103,16 @@ export type WhatsappInsightExtraction = {
   next_step_date: string | null
   next_step_owner: 'me' | 'them' | null
   contact_facts: Array<{
-    category: 'family' | 'career_intel' | 'compensation' | 'obsession' | 'hot_button' | 'life_phase' | 'origin_story' | 'preference' | 'other'
+    category: 'key_date' | 'family' | 'career_intel' | 'compensation' | 'obsession' | 'hot_button' | 'life_phase' | 'origin_story' | 'preference' | 'other'
     label: string | null
     value: string
     importance: 1 | 2 | 3
     needs_review: boolean
+    event_type?: 'birthday' | 'anniversary' | 'travel' | 'return' | 'move' | 'important_date' | null
+    subject?: string | null
+    relation?: string | null
+    date_value?: string | null
+    date_precision?: 'exact' | 'month_day' | 'month' | 'year' | 'unknown' | null
   }>
   value_logs: Array<{
     type: 'introduction' | 'content' | 'referral' | 'opportunity'
@@ -174,6 +179,7 @@ function normalizeValueLogs(valueLogs: WhatsappInsightExtraction['value_logs']):
 
 function normalizeContactFacts(facts: WhatsappInsightExtraction['contact_facts']): WhatsappInsightExtraction['contact_facts'] {
   const allowed = new Set([
+    'key_date',
     'family',
     'career_intel',
     'compensation',
@@ -192,12 +198,37 @@ function normalizeContactFacts(facts: WhatsappInsightExtraction['contact_facts']
       value: fact.value.trim(),
       importance: fact.importance === 3 || fact.importance === 1 ? fact.importance : 2,
       needs_review: Boolean(fact.needs_review),
+      event_type: fact.event_type ?? null,
+      subject: fact.subject ?? null,
+      relation: fact.relation ?? null,
+      date_value: fact.date_value ?? null,
+      date_precision: fact.date_precision ?? null,
     }))
+    .map((fact) => {
+      const text = `${fact.label ?? ''} ${fact.value}`.toLowerCase()
+      if (/\b(cumpleaños|birthday|aniversario|anniversary|fecha importante|nació|nacimiento|vuelve|regresa|sale de viaje|vacaciones|viaje|mudanza|se muda|se mudó|se mudo)\b/i.test(text)) {
+        const eventType =
+          /\b(cumpleaños|birthday|nació|nacimiento)\b/i.test(text) ? 'birthday' :
+          /\b(aniversario|anniversary)\b/i.test(text) ? 'anniversary' :
+          /\b(vuelve|regresa)\b/i.test(text) ? 'return' :
+          /\b(viaje|vacaciones|sale de viaje)\b/i.test(text) ? 'travel' :
+          /\b(mudanza|se muda|se mudó|se mudo)\b/i.test(text) ? 'move' :
+          'important_date'
+        return {
+          ...fact,
+          category: 'key_date' as const,
+          label: fact.label ?? 'key_date',
+          event_type: fact.event_type ?? eventType,
+          date_precision: fact.date_precision ?? (fact.date_value ? 'exact' : 'unknown'),
+        }
+      }
+      return fact
+    })
     .filter((fact) => {
       const text = `${fact.label ?? ''} ${fact.value}`.toLowerCase()
       if (/\b(dolor|duele|síntoma|sintoma|enfermo|enferma|resfrío|resfrio|uña|golpe|me pegué|me pegue|cansad|sueño|hambre|lloró|lloro)\b/i.test(text)) return false
       if (/\b(hoy|ayer|mañana|manana|recién|recien|ahora|rato|almuerzo|cena|desayuno|uber|pedido|supermercado|llegando|salgo|llego)\b/i.test(text) && !/\b(viaje|vacaciones|vuelve|regresa|cumpleaños|birthday|aniversario|entrevista|trabajo|rol)\b/i.test(text)) return false
-      if (/\b(cumpleaños|birthday|aniversario|anniversary|fecha importante|nació|nacimiento|vuelve|regresa|sale de viaje|vacaciones|viaje)\b/i.test(text)) return true
+      if (fact.category === 'key_date') return true
       if (/\b(hijo|hija|niño|niña|bebé|bebe|espos|pareja|mamá|mama|papá|papa|herman|familia)\b/i.test(text) && /\b(se llama|llamad|nombre|nació|vive|cumpleaños|birthday)\b/i.test(text)) return true
       if (/\b(vive|reside|se mud|mudanza|ubicad|ciudad|país|pais|boston|chile|usa|estados unidos)\b/i.test(text)) return true
       if (/\b(trabaja|rol|cargo|empresa|compañía|compania|reclut|consultor|founder|manager|director|busca trabajo|empleo)\b/i.test(text)) return true
@@ -246,8 +277,13 @@ export async function extractWhatsappInsights(input: {
     'La conversación ya viene cortada por día local y por ventana corta; NO consolides varios días.',
     'El campo summary solo va a interactions.notes. No escondas facts, valor o tareas dentro del summary.',
     'contact_facts también es estricto: solo memoria durable y útil para relación/CRM.',
-    'Incluye facts solo si son de estas clases:',
-    '- fechas relevantes: cumpleaños, aniversarios, fecha de viaje/vuelta, mudanza, eventos importantes.',
+    'Separa key dates de facts:',
+    '- key_date: cumpleaños, aniversarios, fecha de viaje/vuelta, mudanza, eventos importantes fechables.',
+    '- key_date SIEMPRE debe incluir qué es + quién/persona relacionada + fecha. Ejemplos: "Cumpleaños de Domingo (hijo): 2023-05-12", "Vuelve de vacaciones: 2026-07-03", "Aniversario de matrimonio: fecha no especificada".',
+    '- NO pongas una fecha sola. Si sabes el evento/persona pero no la fecha exacta, escribe "fecha no especificada" para que el usuario pueda completarla.',
+    '- Para key_date llena además: event_type, subject, relation, date_value y date_precision. subject es la persona/cosa de la fecha; relation es hijo, pareja, contacto, etc. date_value debe ser YYYY-MM-DD si es exacta; si solo hay mes/día usa MM-DD y date_precision="month_day"; si no hay fecha usa null y date_precision="unknown".',
+    '- facts: gustos, preferencias, pasiones, contexto durable, ubicación, familia, trabajo/carrera, compensación o información sensible estable.',
+    'Incluye contact_facts solo si son de estas clases:',
     '- familia estable: nombres de hijos/pareja/padres/hermanos, relaciones importantes.',
     '- ubicación estable: dónde vive, ciudad/país, mudanza.',
     '- trabajo/carrera: rol, empresa, búsqueda laboral, proyecto profesional relevante.',
@@ -274,7 +310,7 @@ export async function extractWhatsappInsights(input: {
     '  "next_step": "acción concreta o null",',
     '  "next_step_date": "YYYY-MM-DD o null",',
     '  "next_step_owner": "me | them | null",',
-    '  "contact_facts": [{"category":"family|career_intel|compensation|obsession|hot_button|life_phase|origin_story|preference|other","label":null|string,"value":"hecho durable, estable y útil","importance":1|2|3,"needs_review":true|false}],',
+    '  "contact_facts": [{"category":"key_date|family|career_intel|compensation|obsession|hot_button|life_phase|origin_story|preference|other","label":null|string,"value":"hecho durable, estable y útil","importance":1|2|3,"needs_review":true|false,"event_type":"birthday|anniversary|travel|return|move|important_date|null","subject":null|string,"relation":null|string,"date_value":null|string,"date_precision":"exact|month_day|month|year|unknown|null"}],',
     '  "value_logs": [{"type":"introduction|content|referral|opportunity","direction":"given|received","description":"valor explícito, no conversación normal"}],',
     '  "todos": [{"text":"tarea concreta","date":"YYYY-MM-DD|null"}]',
     '}',

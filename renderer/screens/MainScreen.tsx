@@ -638,6 +638,7 @@ function AiReviewTable({
               <th>Person</th>
               <th>Status</th>
               <th>This review</th>
+              <th>Key dates</th>
               <th>Facts</th>
               <th>Value</th>
               <th>Todos</th>
@@ -648,7 +649,7 @@ function AiReviewTable({
           <tbody>
             {groups.length === 0 ? (
               <tr>
-                <td colSpan={8} className="ai-review-empty">No AI proposals or identity issues.</td>
+                <td colSpan={9} className="ai-review-empty">No AI proposals or identity issues.</td>
               </tr>
             ) : (
               groups.map((group) => {
@@ -684,7 +685,8 @@ function AiReviewTable({
                           <span>{preview || 'No proposed writes yet'}</span>
                         </div>
                       </td>
-                      <td>{countBadge(group.counts.contact_fact, 'fact')}</td>
+                      <td>{countBadge(group.outputs.filter(isKeyDateOutput).length, 'date')}</td>
+                      <td>{countBadge(group.outputs.filter((output) => output.target === 'contact_fact' && !isKeyDateOutput(output)).length, 'fact')}</td>
                       <td>{countBadge(group.counts.value_log, 'value')}</td>
                       <td>{countBadge(group.counts.todo, 'todo')}</td>
                       <td>{countBadge(group.counts.review_item, 'review')}</td>
@@ -719,7 +721,7 @@ function AiReviewTable({
                     {isOpen && group.days.map((day) => (
                       <Fragment key={`${group.key}:${day.date}`}>
                         <tr key={`${group.key}:${day.date}`} className="ai-day-row">
-                          <td colSpan={8}>
+                          <td colSpan={9}>
                             <div className="ai-day-label">
                               <strong>{day.date}</strong>
                               <span>{day.outputs.length} proposed write{day.outputs.length === 1 ? '' : 's'}</span>
@@ -729,7 +731,7 @@ function AiReviewTable({
                         {day.outputs.length === 0 && group.issue ? (
                           <tr key={`${group.key}:${day.date}:issue`} className="ai-output-row">
                             <td />
-                            <td colSpan={6}>Link this chat to reThink before AI can write structured rows.</td>
+                            <td colSpan={7}>Link this chat to reThink before AI can write structured rows.</td>
                             <td>
                               <button className="ai-primary-action" onClick={() => onResolveIssue(group.issue!)}>
                                 Resolve
@@ -740,7 +742,40 @@ function AiReviewTable({
                           <tr key={`${group.key}:${day.date}:outputs`} className="ai-output-row">
                             <td />
                             <td />
-                            {(['interaction', 'contact_fact', 'value_log', 'todo', 'review_item'] as const).map((target) => (
+                            <td>
+                              <AiOutputCell
+                                outputs={day.outputs.filter((output) => output.target === 'interaction')}
+                                editing={editing}
+                                busy={busy}
+                                onEdit={setEditing}
+                                onUpdate={onUpdate}
+                                onApprove={onApprove}
+                                onReject={onRejectMany}
+                              />
+                            </td>
+                            <td>
+                              <AiOutputCell
+                                outputs={day.outputs.filter(isKeyDateOutput)}
+                                editing={editing}
+                                busy={busy}
+                                onEdit={setEditing}
+                                onUpdate={onUpdate}
+                                onApprove={onApprove}
+                                onReject={onRejectMany}
+                              />
+                            </td>
+                            <td>
+                              <AiOutputCell
+                                outputs={day.outputs.filter((output) => output.target === 'contact_fact' && !isKeyDateOutput(output))}
+                                editing={editing}
+                                busy={busy}
+                                onEdit={setEditing}
+                                onUpdate={onUpdate}
+                                onApprove={onApprove}
+                                onReject={onRejectMany}
+                              />
+                            </td>
+                            {(['value_log', 'todo', 'review_item'] as const).map((target) => (
                               <td key={target}>
                                 <AiOutputCell
                                   outputs={day.outputs.filter((output) => output.target === target)}
@@ -787,6 +822,18 @@ function countBadge(count: number, label: string) {
       {label}
     </span>
   )
+}
+
+function isKeyDateOutput(output: AiStagedOutput) {
+  if (output.target !== 'contact_fact') return false
+  try {
+    const payload = JSON.parse(output.payload_json) as { category?: string | null; label?: string | null; value?: string | null }
+    const text = `${payload.category ?? ''} ${payload.label ?? ''} ${payload.value ?? output.body ?? ''}`.toLowerCase()
+    return payload.category === 'key_date' || /\b(cumpleaños|birthday|aniversario|anniversary|vuelve|regresa|viaje|vacaciones|mudanza|se muda|se mudó|se mudo|nació|nacimiento)\b/i.test(text)
+  } catch {
+    const text = (output.body ?? '').toLowerCase()
+    return /\b(cumpleaños|birthday|aniversario|anniversary|vuelve|regresa|viaje|vacaciones|mudanza|se muda|se mudó|se mudo|nació|nacimiento)\b/i.test(text)
+  }
 }
 
 function aiGroupPreview(group: AiReviewGroup) {

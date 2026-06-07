@@ -469,6 +469,12 @@ export class DailyInsightRunner {
               value: fact.value,
               importance: fact.importance || 2,
               source: 'chat_capture',
+              event_type: fact.event_type ?? null,
+              subject: fact.subject ?? null,
+              relation: fact.relation ?? null,
+              date_value: fact.date_value ?? null,
+              date_precision: fact.date_precision ?? null,
+              description: fact.value,
             }
             const stagedId = stageAiOutput({
               run_id: runId,
@@ -672,7 +678,31 @@ export class DailyInsightRunner {
           .eq('user_id', user.id)
       }
     } else if (row.target === 'contact_fact') {
-      const { data, error } = await supabase.from('contact_facts').insert({
+      if (payload.category === 'key_date') {
+        const { data: keyDate, error: keyDateError } = await supabase
+          .from('contact_key_dates')
+          .insert({
+            user_id: user.id,
+            contact_id: payload.contact_id,
+            event_type: payload.event_type,
+            subject: payload.subject,
+            relation: payload.relation,
+            date_value: payload.date_value,
+            date_precision: payload.date_precision,
+            description: payload.description ?? payload.value,
+            source: payload.source,
+            source_interaction_date: row.interaction_date,
+          })
+          .select('id')
+          .single()
+        if (!keyDateError) {
+          supabaseId = keyDate?.id ?? null
+        } else {
+          console.warn('[daily-insights] contact_key_dates insert failed; falling back to contact_facts:', keyDateError.message)
+        }
+      }
+      if (!supabaseId) {
+        const { data, error } = await supabase.from('contact_facts').insert({
         user_id: user.id,
         contact_id: payload.contact_id,
         category: payload.category,
@@ -680,9 +710,10 @@ export class DailyInsightRunner {
         value: payload.value,
         importance: payload.importance,
         source: payload.source,
-      }).select('id').single()
-      if (error) throw new Error(error.message)
-      supabaseId = data?.id ?? null
+        }).select('id').single()
+        if (error) throw new Error(error.message)
+        supabaseId = data?.id ?? null
+      }
     } else if (row.target === 'value_log') {
       const { data, error } = await supabase.from('value_logs').insert({
         user_id: user.id,
