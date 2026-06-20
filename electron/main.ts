@@ -21,7 +21,7 @@ import * as path from 'path'
 import { loadEnvFile } from './supabase/env'
 import { registerAuthIpc } from './supabase/auth'
 import { registerContactIpc, setLinkedinWebContentsForScrape } from './supabase/contacts'
-import { applyLayout, TAB_BAR_HEIGHT } from './layout'
+import { applyLayout, SIDEBAR_WIDTH, TAB_BAR_HEIGHT } from './layout'
 import { countPendingAiStagedOutputs, getDb, insertMessage, assignMessageToSession, type MessageInput } from './db/local'
 import { handleMessage, recoverOpenSessions } from './session-manager'
 import { startSync, stopSync } from './sync/supabase-sync'
@@ -68,6 +68,7 @@ let sidebarView: WebContentsView | null = null
 let searchOverlayView: WebContentsView | null = null
 let syncCoordinator: ReturnType<typeof createSyncCoordinator> | null = null
 const whatsappBridge = new WhatsappBridge()
+const WHATSAPP_LEFT_RAIL_CROP = 72
 let insightRunner: DailyInsightRunner | null = null
 let insightTimer: ReturnType<typeof setTimeout> | null = null
 let sidebarVisible = true
@@ -672,6 +673,20 @@ function activeContentView(): WebContentsView | null {
   return sidebarView
 }
 
+function cropWhatsAppLeftRail(): void {
+  if (!mainWindow || !whatsappView || activeTab !== 'wa') return
+  const { width, height } = mainWindow.getContentBounds()
+  const sidebarW = sidebarVisible ? SIDEBAR_WIDTH : 0
+  const contentW = Math.max(0, width - sidebarW)
+  const belowTabs = Math.max(0, height - TAB_BAR_HEIGHT)
+  whatsappView.setBounds({
+    x: -WHATSAPP_LEFT_RAIL_CROP,
+    y: TAB_BAR_HEIGHT,
+    width: contentW + WHATSAPP_LEFT_RAIL_CROP,
+    height: belowTabs,
+  })
+}
+
 function refreshLayout(): void {
   if (!mainWindow || !tabBarView || !whatsappView || !linkedinView || !sidebarView) return
   if (activeTab === 'ai') {
@@ -697,6 +712,7 @@ function refreshLayout(): void {
     sidebarView,
     sidebarVisible,
   })
+  cropWhatsAppLeftRail()
   // Keep the overlay sized to the whole window when visible.
   if (overlayVisible && searchOverlayView) {
     const { width, height } = mainWindow.getContentBounds()
