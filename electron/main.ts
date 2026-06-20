@@ -967,6 +967,54 @@ function injectBannerHider(view: WebContentsView): void {
         (() => {
           const NEEDLE = 'Get WhatsApp for Mac';
           let scheduled = false;
+          function installRailCss() {
+            if (document.getElementById('conv-wa-rail-tweaks')) return;
+            const style = document.createElement('style');
+            style.id = 'conv-wa-rail-tweaks';
+            style.textContent = [
+              'html.conv-hide-wa-rail nav[aria-label]:not(:has(#pane-side)):not(:has([data-testid="chat-list"])) { display: none !important; width: 0 !important; min-width: 0 !important; flex-basis: 0 !important; }',
+              'html.conv-hide-wa-rail [role="navigation"]:not(:has(#pane-side)):not(:has([data-testid="chat-list"])) { display: none !important; width: 0 !important; min-width: 0 !important; flex-basis: 0 !important; }',
+              '.conv-hidden-wa-rail { display: none !important; width: 0 !important; min-width: 0 !important; max-width: 0 !important; flex: 0 0 0 !important; overflow: hidden !important; }'
+            ].join('\\n');
+            document.head.appendChild(style);
+            document.documentElement.classList.add('conv-hide-wa-rail');
+          }
+          function isChatList(el) {
+            return Boolean(el.querySelector('#pane-side, [data-testid="chat-list"], [aria-label*="Search"], input, textarea'));
+          }
+          function railScore(el) {
+            const r = el.getBoundingClientRect();
+            if (r.left > 130 || r.width < 36 || r.width > 130 || r.height < window.innerHeight * 0.55) return 0;
+            if (isChatList(el)) return 0;
+            const controls = el.querySelectorAll('button, a, [role="button"], [tabindex]').length;
+            if (controls < 3) return 0;
+            const text = (el.textContent || '').replace(/\\s+/g, ' ').trim();
+            if (text.length > 120) return 0;
+            return controls * 10 + Math.round(r.height / 100) - Math.round(r.width / 10);
+          }
+          function hideLeftRail() {
+            installRailCss();
+            const candidates = Array.from(document.querySelectorAll('nav, [role="navigation"], aside, div'));
+            let best = null;
+            let bestScore = 0;
+            for (const el of candidates) {
+              const score = railScore(el);
+              if (score > bestScore) {
+                best = el;
+                bestScore = score;
+              }
+            }
+            if (!best) return false;
+            let target = best;
+            while (target.parentElement && target.parentElement !== document.body) {
+              const r = target.getBoundingClientRect();
+              const p = target.parentElement.getBoundingClientRect();
+              if (p.left > 130 || p.width > 145 || p.height < window.innerHeight * 0.55 || isChatList(target.parentElement)) break;
+              target = target.parentElement;
+            }
+            target.classList.add('conv-hidden-wa-rail');
+            return true;
+          }
           function findAndHide() {
             const candidates = document.querySelectorAll('a, button');
             for (const el of candidates) {
@@ -983,13 +1031,18 @@ function injectBannerHider(view: WebContentsView): void {
             }
             return false;
           }
+          function applyTweaks() {
+            hideLeftRail();
+            findAndHide();
+          }
           function schedule() {
             if (scheduled) return;
             scheduled = true;
-            requestAnimationFrame(() => { scheduled = false; findAndHide(); });
+            requestAnimationFrame(() => { scheduled = false; applyTweaks(); });
           }
-          setTimeout(findAndHide, 500);
-          setTimeout(findAndHide, 2000);
+          setTimeout(applyTweaks, 500);
+          setTimeout(applyTweaks, 2000);
+          setTimeout(applyTweaks, 5000);
           const obs = new MutationObserver(schedule);
           obs.observe(document.body, { childList: true, subtree: true });
         })();
