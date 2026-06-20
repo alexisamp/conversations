@@ -68,7 +68,7 @@ let sidebarView: WebContentsView | null = null
 let searchOverlayView: WebContentsView | null = null
 let syncCoordinator: ReturnType<typeof createSyncCoordinator> | null = null
 const whatsappBridge = new WhatsappBridge()
-const WHATSAPP_LEFT_RAIL_CROP = 4
+const WHATSAPP_LEFT_RAIL_CROP = 0
 let insightRunner: DailyInsightRunner | null = null
 let insightTimer: ReturnType<typeof setTimeout> | null = null
 let sidebarVisible = true
@@ -990,7 +990,8 @@ function injectBannerHider(view: WebContentsView): void {
             style.textContent = [
               'html.conv-hide-wa-rail nav[aria-label]:not(:has(#pane-side)):not(:has([data-testid="chat-list"])) { display: none !important; width: 0 !important; min-width: 0 !important; flex-basis: 0 !important; }',
               'html.conv-hide-wa-rail [role="navigation"]:not(:has(#pane-side)):not(:has([data-testid="chat-list"])) { display: none !important; width: 0 !important; min-width: 0 !important; flex-basis: 0 !important; }',
-              '.conv-hidden-wa-rail { display: none !important; width: 0 !important; min-width: 0 !important; max-width: 0 !important; flex: 0 0 0 !important; overflow: hidden !important; }'
+              '.conv-hidden-wa-rail { display: none !important; width: 0 !important; min-width: 0 !important; max-width: 0 !important; flex: 0 0 0 !important; overflow: hidden !important; opacity: 0 !important; pointer-events: none !important; }',
+              '.conv-hidden-wa-separator { display: none !important; opacity: 0 !important; border-color: transparent !important; box-shadow: none !important; }'
             ].join('\\n');
             document.head.appendChild(style);
             document.documentElement.classList.add('conv-hide-wa-rail');
@@ -1010,6 +1011,23 @@ function injectBannerHider(view: WebContentsView): void {
           }
           function hideLeftRail() {
             installRailCss();
+            const labelMatches = Array.from(document.querySelectorAll('[aria-label], [title]')).filter((el) => {
+              const label = ((el.getAttribute('aria-label') || '') + ' ' + (el.getAttribute('title') || '')).toLowerCase();
+              return /\\b(chats?|status|updates|channels?|communities|meta ai|settings|profile|archived)\\b/.test(label);
+            });
+            for (const el of labelMatches) {
+              let target = el;
+              while (target.parentElement && target.parentElement !== document.body) {
+                const r = target.getBoundingClientRect();
+                const p = target.parentElement.getBoundingClientRect();
+                if (p.left > 110 || p.width > 125 || p.height < window.innerHeight * 0.45 || isChatList(target.parentElement)) break;
+                target = target.parentElement;
+              }
+              const r = target.getBoundingClientRect();
+              if (r.left <= 110 && r.width >= 32 && r.width <= 125 && r.height >= window.innerHeight * 0.45 && !isChatList(target)) {
+                target.classList.add('conv-hidden-wa-rail');
+              }
+            }
             const candidates = Array.from(document.querySelectorAll('nav, [role="navigation"], aside, div'));
             let best = null;
             let bestScore = 0;
@@ -1031,6 +1049,25 @@ function injectBannerHider(view: WebContentsView): void {
             target.classList.add('conv-hidden-wa-rail');
             return true;
           }
+          function hideRailSeparators() {
+            const all = Array.from(document.querySelectorAll('div, aside, nav, span'));
+            for (const el of all) {
+              const r = el.getBoundingClientRect();
+              if (r.left < 50 || r.left > 115 || r.width > 3 || r.height < window.innerHeight * 0.45) continue;
+              el.classList.add('conv-hidden-wa-separator');
+            }
+            const bordered = Array.from(document.querySelectorAll('div, aside, nav'));
+            for (const el of bordered) {
+              const r = el.getBoundingClientRect();
+              if (r.left > 125 || r.width > 140 || r.height < window.innerHeight * 0.45) continue;
+              const cs = getComputedStyle(el);
+              if (cs.borderRightWidth !== '0px' || cs.borderLeftWidth !== '0px') {
+                el.style.setProperty('border-left-color', 'transparent', 'important');
+                el.style.setProperty('border-right-color', 'transparent', 'important');
+                el.style.setProperty('box-shadow', 'none', 'important');
+              }
+            }
+          }
           function findAndHide() {
             const candidates = document.querySelectorAll('a, button');
             for (const el of candidates) {
@@ -1049,6 +1086,7 @@ function injectBannerHider(view: WebContentsView): void {
           }
           function applyTweaks() {
             hideLeftRail();
+            hideRailSeparators();
             findAndHide();
           }
           function schedule() {
