@@ -29,13 +29,16 @@ export function SettingsScreen({ onBack }: { onBack: () => void }) {
   return (
     <div className="settings">
       <header className="settings-header">
-        <button className="ghost-button" onClick={onBack}>
-          ← Back
+        <button className="settings-back" onClick={onBack} aria-label="Back">
+          ←
         </button>
-        <h2>Settings</h2>
+        <div>
+          <span>Conversations</span>
+          <h2>Settings</h2>
+        </div>
       </header>
 
-      <section className="settings-section">
+      <section className="settings-section settings-card">
         <div className="settings-section-title">About</div>
         <div className="settings-row">
           <span className="muted">Version</span>
@@ -48,7 +51,7 @@ export function SettingsScreen({ onBack }: { onBack: () => void }) {
         )}
       </section>
 
-      <section className="settings-section">
+      <section className="settings-section settings-card">
         <div className="settings-section-title">Updates</div>
         <UpdateBlock
           status={status}

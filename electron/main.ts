@@ -21,7 +21,7 @@ import * as path from 'path'
 import { loadEnvFile } from './supabase/env'
 import { registerAuthIpc } from './supabase/auth'
 import { registerContactIpc, setLinkedinWebContentsForScrape } from './supabase/contacts'
-import { applyLayout } from './layout'
+import { applyLayout, TAB_BAR_HEIGHT } from './layout'
 import { countPendingAiStagedOutputs, getDb, insertMessage, assignMessageToSession, type MessageInput } from './db/local'
 import { handleMessage, recoverOpenSessions } from './session-manager'
 import { startSync, stopSync } from './sync/supabase-sync'
@@ -221,15 +221,16 @@ const TAB_BAR_HTML = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8" /><style>
   :root {
     --burnham: #003720;
-    --shuttle: #536471;
-    --mercury: #e3e3e3;
-    --bg: #f7f7f5;
+    --moss: #3E7A4E;
+    --pastel: #79D65E;
+    --gossip: #EAF6CC;
+    --chrome: #1b201d;
   }
   * { box-sizing: border-box; }
   html, body {
     margin: 0; padding: 0; height: 100%;
     font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
-    background: var(--bg);
+    background: var(--chrome);
     user-select: none;
     -webkit-user-select: none;
     -webkit-app-region: drag;
@@ -237,16 +238,37 @@ const TAB_BAR_HTML = `<!doctype html>
   .tab-bar {
     display: flex;
     align-items: center;
-    height: 38px;
-    padding: 0 10px 0 82px; /* left padding leaves room for macOS traffic lights */
-    border-bottom: 1px solid var(--mercury);
-    gap: 4px;
+    height: 52px;
+    padding: 0 12px 0 82px; /* left padding leaves room for macOS traffic lights */
+    border-bottom: 1px solid #0c0f0d;
+    gap: 10px;
+    background: var(--chrome);
+  }
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    padding-right: 4px;
+    color: rgba(255,255,255,0.92);
+    font-weight: 650;
+    font-size: 13.5px;
+    white-space: nowrap;
+  }
+  .logo {
+    width: 28px;
+    height: 28px;
+    border-radius: 8px;
+    background: linear-gradient(135deg, var(--pastel), var(--moss));
+    display: grid;
+    place-items: center;
+    color: var(--burnham);
+    font-weight: 800;
+    box-shadow: 0 0 0 1px rgba(255,255,255,0.12);
   }
   .nav {
     -webkit-app-region: no-drag;
     display: flex;
-    gap: 2px;
-    margin-right: 8px;
+    gap: 1px;
   }
   .nav button {
     background: transparent;
@@ -257,58 +279,112 @@ const TAB_BAR_HTML = `<!doctype html>
     align-items: center;
     justify-content: center;
     cursor: pointer;
-    border-radius: 5px;
-    color: var(--shuttle);
+    border-radius: 7px;
+    color: rgba(255,255,255,0.42);
     font-size: 13px;
     font-family: inherit;
   }
-  .nav button:hover { background: rgba(0, 55, 32, 0.08); color: var(--burnham); }
+  .nav button:hover { background: rgba(255,255,255,0.08); color: white; }
+  .tabs {
+    display: flex;
+    align-items: center;
+    gap: 3px;
+  }
   .tab {
     -webkit-app-region: no-drag;
     background: transparent;
     border: none;
-    padding: 6px 14px;
-    font-size: 12px;
+    height: 34px;
+    padding: 0 13px;
+    font-size: 13px;
     font-weight: 500;
-    color: var(--shuttle);
+    color: rgba(255,255,255,0.62);
     cursor: pointer;
-    border-radius: 6px;
+    border-radius: 9px;
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 7px;
     font-family: inherit;
+    transition: background 150ms ease, color 150ms ease;
   }
-  .tab:hover { background: rgba(0, 55, 32, 0.05); }
+  .tab:hover { background: rgba(255,255,255,0.08); color: white; }
   .tab.active {
-    background: white;
-    color: var(--burnham);
+    background: rgba(255,255,255,0.13);
+    color: white;
     font-weight: 600;
-    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
   }
-  .tab .dot {
-    width: 6px; height: 6px; border-radius: 50%;
-    background: currentColor;
-    opacity: 0.6;
+  .tab .icon {
+    width: 18px;
+    text-align: center;
+    color: rgba(255,255,255,0.5);
+    font-size: 15px;
+  }
+  .tab.active .icon {
+    color: var(--pastel);
   }
   .tab .shortcut {
     font-size: 10px;
-    color: var(--shuttle);
-    opacity: 0.5;
+    color: rgba(255,255,255,0.46);
     font-weight: 400;
     margin-left: 2px;
+    font-family: ui-monospace, 'SF Mono', Menlo, monospace;
   }
-  .tab.active .shortcut { color: var(--burnham); opacity: 0.7; }
+  .tab.active .shortcut { color: rgba(255,255,255,0.72); }
+  .spacer { flex: 1; min-width: 8px; }
+  .search {
+    -webkit-app-region: no-drag;
+    height: 32px;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 0 10px;
+    border: 1px solid rgba(255,255,255,0.13);
+    border-radius: 9px;
+    background: rgba(255,255,255,0.06);
+    color: rgba(255,255,255,0.62);
+    font-size: 12.5px;
+    cursor: pointer;
+    font-family: inherit;
+  }
+  .search:hover { color: white; border-color: rgba(255,255,255,0.32); }
+  .search kbd {
+    font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+    font-size: 10px;
+    color: rgba(255,255,255,0.52);
+    border: 1px solid rgba(255,255,255,0.18);
+    border-radius: 5px;
+    padding: 1px 5px;
+  }
+  .me {
+    width: 30px;
+    height: 30px;
+    border-radius: 50%;
+    display: grid;
+    place-items: center;
+    background: var(--moss);
+    color: white;
+    font-family: Georgia, 'Times New Roman', serif;
+    font-size: 11px;
+    font-weight: 700;
+    box-shadow: 0 0 0 1.5px rgba(255,255,255,0.22);
+  }
 </style></head><body>
   <div class="tab-bar">
+    <div class="brand"><span class="logo">C</span><span>Conversations</span></div>
     <div class="nav">
       <button id="nav-back" title="Back (⌘[)">‹</button>
       <button id="nav-forward" title="Forward (⌘])">›</button>
       <button id="nav-reload" title="Reload (⌘R)">⟳</button>
       <button id="nav-home" title="Home (⌘⇧H)">⌂</button>
     </div>
-    <button class="tab active" data-tab="wa"><span class="dot" style="background:#25D366"></span>WhatsApp<span class="shortcut">⌘1</span></button>
-    <button class="tab" data-tab="li"><span class="dot" style="background:#0A66C2"></span>LinkedIn<span class="shortcut">⌘2</span></button>
-    <button class="tab" data-tab="ai"><span class="dot" style="background:#7C3AED"></span>AI Review<span class="shortcut">⌘3</span></button>
+    <div class="tabs">
+      <button class="tab active" data-tab="wa"><span class="icon">WA</span>WhatsApp<span class="shortcut">⌘1</span></button>
+      <button class="tab" data-tab="li"><span class="icon">in</span>LinkedIn<span class="shortcut">⌘2</span></button>
+      <button class="tab" data-tab="ai"><span class="icon">✦</span>AI Review<span class="shortcut">⌘3</span></button>
+    </div>
+    <div class="spacer"></div>
+    <button class="search" id="nav-search" title="Search LinkedIn (⌘K)">⌕<span>Search</span><kbd>⌘K</kbd></button>
+    <div class="me">AM</div>
   </div>
   <script>
     const tabs = document.querySelectorAll('.tab');
@@ -319,6 +395,7 @@ const TAB_BAR_HTML = `<!doctype html>
     document.getElementById('nav-forward').addEventListener('click', () => window.convTab.forward());
     document.getElementById('nav-reload').addEventListener('click', () => window.convTab.reload());
     document.getElementById('nav-home').addEventListener('click', () => window.convTab.home());
+    document.getElementById('nav-search').addEventListener('click', () => window.convTab.search());
     window.convTab.onActiveChanged((name) => {
       tabs.forEach(el => el.classList.toggle('active', el.dataset.tab === name));
     });
@@ -599,14 +676,14 @@ function refreshLayout(): void {
   if (!mainWindow || !tabBarView || !whatsappView || !linkedinView || !sidebarView) return
   if (activeTab === 'ai') {
     const { width, height } = mainWindow.getContentBounds()
-    const belowTabs = Math.max(0, height - 38)
-    tabBarView.setBounds({ x: 0, y: 0, width, height: 38 })
+    const belowTabs = Math.max(0, height - TAB_BAR_HEIGHT)
+    tabBarView.setBounds({ x: 0, y: 0, width, height: TAB_BAR_HEIGHT })
     tabBarView.setVisible(true)
     whatsappView.setBounds({ x: 0, y: 0, width: 0, height: 0 })
     whatsappView.setVisible(false)
     linkedinView.setBounds({ x: 0, y: 0, width: 0, height: 0 })
     linkedinView.setVisible(false)
-    sidebarView.setBounds({ x: 0, y: 38, width, height: belowTabs })
+    sidebarView.setBounds({ x: 0, y: TAB_BAR_HEIGHT, width, height: belowTabs })
     sidebarView.setVisible(true)
     return
   }
@@ -1906,6 +1983,9 @@ function registerIpc(): void {
     if (activeTab === 'ai') return
     const url = activeTab === 'wa' ? WHATSAPP_URL : LINKEDIN_URL
     activeContentView()?.webContents.loadURL(url).catch(() => {})
+  })
+  ipcMain.on('tab:search', () => {
+    showSearchOverlay()
   })
 
   // WhatsApp preload → store + gate

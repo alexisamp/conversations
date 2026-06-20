@@ -20,6 +20,9 @@ const api = {
   home: (): void => {
     ipcRenderer.send('tab:home')
   },
+  search: (): void => {
+    ipcRenderer.send('tab:search')
+  },
   onActiveChanged: (cb: (name: 'wa' | 'li' | 'ai') => void): void => {
     ipcRenderer.on('tab:active-changed', (_event, name: 'wa' | 'li' | 'ai') => cb(name))
   },

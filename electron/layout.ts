@@ -1,7 +1,7 @@
 import type { BaseWindow, WebContentsView } from 'electron'
 
 export const SIDEBAR_WIDTH = 340
-export const TAB_BAR_HEIGHT = 38
+export const TAB_BAR_HEIGHT = 52
 
 export type LayoutInput = {
   win: BaseWindow
