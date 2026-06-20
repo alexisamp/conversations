@@ -1,0 +1,260 @@
+/* ============================================================
+   reThink Design System — Colors & Type
+   Source: alexisamp/reThink-2026 tailwind.config.js + SPEC.md §15.5
+   Pulled from Today screen + AppShell usage.
+   ============================================================ */
+
+/* ── Webfonts ─────────────────────────────────────────────── */
+/* Geist — primary UI face. Source Serif 4 — display headlines (Tiempos-feel). JetBrains Mono — numbers/code. */
+@import url('https://fonts.googleapis.com/css2?family=Geist:wght@300..700&family=Geist+Mono:wght@400;500&family=JetBrains+Mono:wght@400;500&family=Source+Serif+4:opsz,wght@8..60,300..700&display=swap');
+
+:root {
+  /* ── Brand palette (the 6 named tokens in tailwind.config.js) ───────────── */
+  --burnham:    #003720;  /* primary dark green — text, logos, primary fills */
+  --moss:       #3E7A4E;  /* mid-green — used in surfaces (not pills anymore) */
+
+  /* Accent palette — harmonic oklch family. Same chroma (~0.12-0.13),
+     close lightness (~0.62-0.70), varying hue only. Earthy/editorial,
+     not "electric web 2.0". Used on milestone pills + featured todo. */
+  --acc-clay:   oklch(0.64 0.13 32);    /* terracota — warm / featured / family */
+  --acc-amber:  oklch(0.67 0.14 78);    /* mustard gold — money / growth */
+  --acc-teal:   oklch(0.60 0.10 195);   /* muted teal — work / structure */
+  --acc-plum:   oklch(0.55 0.10 340);   /* dusty plum — reserve / craft */
+
+  /* Legacy aliases kept so older inline styles don't break; all map to the new family */
+  --el-mint:    var(--acc-teal);
+  --el-cyan:    var(--acc-teal);
+  --el-sky:     var(--acc-teal);
+  --el-violet:  var(--acc-plum);
+  --el-magenta: var(--acc-clay);
+
+  --shuttle:    #536471;  /* muted text — secondary copy, icons */
+  --mercury:    #E3E3E3;  /* borders, dividers, neutral chip bg */
+  --pastel:     #79D65E;  /* logo background only — kept for the brand mark */
+  --pastel-soft: #8AD06F; /* slightly desaturated — streak flame badge, accents */
+  --gossip:     #EAF6CC;  /* refined — active nav, selection */
+  --midnight:   #1A1A1A;  /* near-black — high-emphasis text & contained chips */
+
+  /* ── Semantic foreground / background tokens ────────────────────────────── */
+  --fg-1:       var(--burnham);          /* primary text */
+  --fg-2:       var(--shuttle);          /* secondary text */
+  --fg-3:       color-mix(in oklab, var(--shuttle) 60%, transparent);  /* muted / meta */
+  --fg-on-dark: #ffffff;
+  --fg-on-accent: var(--burnham);        /* text on pastel/gossip */
+
+  --bg-canvas:  #F6F6F6;                 /* neutral light gray — main app canvas */
+  --bg-sidebar: #EDEDEA;                 /* slightly darker + warm — sidebar frame */
+  --bg-1:       #FFFFFF;                 /* cards / elevated surfaces — pure white pops */
+  --bg-2:       #fafafa;                 /* subtle elevation (rare) */
+  --bg-hover:   color-mix(in oklab, var(--mercury) 50%, transparent);
+  --bg-active:  color-mix(in oklab, var(--gossip)  70%, transparent);
+
+  --border-1:   color-mix(in oklab, var(--mercury) 40%, transparent);  /* dividers — softer */
+  --border-2:   color-mix(in oklab, var(--mercury) 100%, transparent); /* card border */
+  --border-strong: color-mix(in oklab, var(--burnham) 20%, transparent);
+
+  /* ── Tier / strength semantic colors (Jacob framework, SPEC.md §5) ──────── */
+  --tier-1:        #D97757;              /* warm — closest contacts ("airport test") */
+  --tier-2:        #C9A66B;              /* amber — shared identity */
+  --tier-3:        #8FA8A0;              /* sage — loose ties */
+  --domain-pro:    var(--midnight);
+  --domain-personal: #D97757;
+  --domain-mixed:  var(--shuttle);
+
+  /* Outreach status palette (STATUS_CONFIG in Today.tsx) */
+  --status-prospect-bg:   color-mix(in oklab, var(--mercury) 50%, transparent);
+  --status-prospect-fg:   color-mix(in oklab, var(--shuttle) 60%, transparent);
+  --status-intro-bg:      var(--gossip);
+  --status-intro-fg:      var(--burnham);
+  --status-engaged-bg:    color-mix(in oklab, var(--pastel) 60%, transparent);
+  --status-engaged-fg:    var(--burnham);
+  --status-nurturing-bg:  var(--pastel);
+  --status-nurturing-fg:  var(--burnham);
+  --status-dormant-bg:    var(--mercury);
+  --status-dormant-fg:    color-mix(in oklab, var(--shuttle) 50%, transparent);
+
+  /* Alerts (no red in palette — used sparingly for destructive only) */
+  --danger:    #E11D48;
+  --warn:      #F59E0B;
+  --info:      #2A6FDB;
+
+  /* ── Type system ────────────────────────────────────────────────────────── */
+  --font-sans:    'Geist', 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-display: 'Source Serif 4', 'Source Serif Pro', 'Tiempos Text', Georgia, serif;  /* page titles + section titles */
+  --font-mono:    'JetBrains Mono', 'Geist Mono', 'SF Mono', Menlo, monospace;
+  --font-serif:   'Source Serif 4', 'Source Serif Pro', Georgia, serif;
+
+  /* Scale — tight, app-dense. Mirrors text-[10px]…text-lg usage in Today.tsx */
+  --fs-8:    8px;    /* ultra-meta — priority numbers, status pills */
+  --fs-9:    9px;    /* mono chips, mention pills */
+  --fs-10:  10px;    /* meta, captions, dates */
+  --fs-11:  11px;    /* secondary body */
+  --fs-12:  12px;    /* default body / list rows (text-xs) */
+  --fs-13:  13px;    /* emphasized body / contact names */
+  --fs-14:  14px;    /* sm */
+  --fs-16:  16px;    /* base */
+  --fs-18:  18px;    /* lg */
+  --fs-22:  22px;    /* headers (Welcome back, page titles) */
+  --fs-28:  28px;    /* hero / day state */
+  --fs-40:  40px;    /* one-thing prompt, focus timer */
+
+  --lh-tight:  1.15;  /* @kind font */
+  --lh-snug:   1.30;  /* @kind font */
+  --lh-base:   1.45;  /* @kind font */
+  --lh-loose:  1.60;  /* @kind font */
+
+  --fw-light:    300;  /* @kind font */
+  --fw-regular:  400;  /* @kind font */
+  --fw-medium:   500;  /* @kind font */
+  --fw-semibold: 600;  /* @kind font */
+  --fw-bold:     700;  /* @kind font */
+
+  /* Letterspacing — uppercase eyebrows use widest */
+  --ls-tight:    -0.01em;  /* @kind font */
+  --ls-normal:   0;        /* @kind font */
+  --ls-eyebrow:  0.12em;   /* @kind font */
+
+  /* ── Spacing — based on 4px grid; matches tailwind defaults the app uses ── */
+  --sp-0:  0;  /* @kind spacing */
+  --sp-px: 1px;
+  --sp-1:  4px;
+  --sp-2:  8px;
+  --sp-3:  12px;
+  --sp-4:  16px;
+  --sp-5:  20px;
+  --sp-6:  24px;
+  --sp-8:  32px;
+  --sp-10: 40px;
+  --sp-12: 48px;
+
+  /* ── Radius (from tailwind.config.js borderRadius extend) ───────────────── */
+  --radius-sm:  4px;
+  --radius:     6px;     /* default */
+  --radius-lg:  10px;
+  --radius-xl:  14px;
+  --radius-2xl: 20px;
+  --radius-full: 9999px;
+
+  /* ── Shadows — the "1px ring + lift" trick for premium feel ─────────────── */
+  --shadow-tooltip: 0 4px 12px rgba(0, 55, 32, 0.10);
+  --shadow-hairline: 0 0 0 1px rgba(0, 55, 32, 0.04);                                       /* 1px ring */
+  --shadow-card:    0 1px 0 rgba(0, 55, 32, 0.04), 0 0 0 1px rgba(0, 55, 32, 0.04);         /* 1px ring + 1px lift */
+  --shadow-card-hover: 0 2px 6px rgba(0, 55, 32, 0.06), 0 0 0 1px rgba(0, 55, 32, 0.06);
+  --shadow-pop:     0 12px 32px rgba(0, 55, 32, 0.12), 0 2px 6px rgba(0, 55, 32, 0.06);
+  --ring-focus:     0 0 0 2px color-mix(in oklab, var(--burnham) 25%, transparent);
+
+  /* Sidebar (AppShell) */
+  --sidebar-w:           200px;
+  --sidebar-w-collapsed: 48px;
+
+  /* Motion (tailwind.config slide-up + transition-all 150ms patterns) */
+  --ease-out-soft: cubic-bezier(0.16, 1, 0.3, 1);  /* @kind other */
+  --dur-fast:  120ms;  /* @kind other */
+  --dur-base:  150ms;  /* @kind other */
+  --dur-slow:  200ms;  /* @kind other */
+}
+
+/* ============================================================
+   SEMANTIC TYPE STYLES
+   ============================================================ */
+
+html, body {
+  font-family: var(--font-sans);
+  color: var(--fg-1);
+  background: var(--bg-1);
+  font-size: var(--fs-12);
+  line-height: var(--lh-snug);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+.font-sans  { font-family: var(--font-sans); }
+.font-serif { font-family: var(--font-serif); }
+.font-mono  { font-family: var(--font-mono); }
+
+/* Headings — used at the top of feature areas (e.g. "Welcome back") */
+.h1 {
+  font-family: var(--font-sans);
+  font-size: var(--fs-28);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--ls-tight);
+  color: var(--fg-1);
+  line-height: var(--lh-tight);
+}
+.h2 {
+  font-family: var(--font-sans);
+  font-size: var(--fs-22);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--ls-tight);
+  color: var(--fg-1);
+}
+.h3 {
+  font-family: var(--font-sans);
+  font-size: var(--fs-18);
+  font-weight: var(--fw-semibold);
+  color: var(--fg-1);
+}
+
+/* Hero — used for the One Thing prompt + focus timer countdown */
+.hero {
+  font-family: var(--font-sans);
+  font-size: var(--fs-40);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--ls-tight);
+  color: var(--fg-1);
+}
+
+/* Tagline — the only place serif italic shows up (Login: "operating system for mindful ambition") */
+.tagline {
+  font-family: var(--font-serif);
+  font-style: italic;
+  font-size: var(--fs-14);
+  color: var(--fg-2);
+}
+
+/* Body */
+.body  { font-size: var(--fs-12); color: var(--fg-1); line-height: var(--lh-base); }
+.body-emph { font-size: var(--fs-13); font-weight: var(--fw-medium); color: var(--fg-1); }
+.body-muted { font-size: var(--fs-12); color: var(--fg-2); }
+
+/* Meta — dates, secondary labels, "3 at Airbnb" */
+.meta {
+  font-size: var(--fs-10);
+  color: var(--fg-2);
+  letter-spacing: 0;
+}
+.meta-mono {
+  font-family: var(--font-mono);
+  font-size: var(--fs-10);
+  color: var(--fg-3);
+}
+
+/* Eyebrow — sidebar section headers ("CRM", "Lists") */
+.eyebrow {
+  font-size: var(--fs-10);
+  font-weight: var(--fw-semibold);
+  text-transform: uppercase;
+  letter-spacing: var(--ls-eyebrow);
+  color: var(--fg-3);
+}
+
+/* Mono — KPI numbers, todo block tags (AM/PM), keyboard shortcuts */
+.mono     { font-family: var(--font-mono); font-size: var(--fs-11); }
+.mono-9   { font-family: var(--font-mono); font-size: var(--fs-9); color: var(--fg-3); }
+.shortcut {
+  font-family: var(--font-mono);
+  font-size: var(--fs-10);
+  background: color-mix(in oklab, var(--mercury) 40%, transparent);
+  padding: 1px 6px;
+  border-radius: var(--radius-sm);
+  color: var(--fg-2);
+}
+
+/* Code */
+code, .code {
+  font-family: var(--font-mono);
+  font-size: var(--fs-12);
+  background: color-mix(in oklab, var(--mercury) 30%, transparent);
+  padding: 1px 5px;
+  border-radius: var(--radius-sm);
+}

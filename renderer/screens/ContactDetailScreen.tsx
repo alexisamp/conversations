@@ -1,9 +1,10 @@
 import { useState } from 'react'
 import type { ContactDetail } from '../conv-api'
+import RelationshipPeek from '../handoff/components/RelationshipPeek'
+import type { KeyDate, RecordRef, RelationshipPerson, Todo } from '../handoff/types'
 import {
   daysSince,
   formatAgo,
-  healthLabel,
   healthState,
   initialsOf,
   INTERACTION_TYPE_LABELS,
@@ -18,304 +19,168 @@ type Props = {
 }
 
 export function ContactDetailScreen({ contact, onRefresh }: Props) {
-  const [loggingOpen, setLoggingOpen] = useState(false)
-  const [valueFormOpen, setValueFormOpen] = useState(false)
-  const [ledgerOpen, setLedgerOpen] = useState(false)
+  const [toast, setToast] = useState<string | null>(null)
+  const person = relationshipPersonFromContact(contact)
 
+  function flash(message: string) {
+    setToast(message)
+    window.setTimeout(() => setToast(null), 2200)
+  }
+
+  function openRecord(ref: RecordRef) {
+    if (ref.kind === 'company') {
+      flash(`${ref.name} record is not wired in this standalone build yet.`)
+    } else {
+      flash(`${ref.kind} record overlay is not wired in this standalone build yet.`)
+    }
+  }
+
+  function addDate(_personId: string, date: KeyDate) {
+    void window.conv.contact
+      .logInteraction({
+        contact_id: contact.id,
+        type: 'whatsapp',
+        notes: `Key date: ${date.label}${date.date ? ` (${date.date})` : ''}`,
+        next_step: null,
+        next_step_date: null,
+      })
+      .then((result) => {
+        if (result.ok) onRefresh()
+        else flash(result.error)
+      })
+  }
+
+  function addTodo(_personId: string, todo: Todo) {
+    void window.conv.contact
+      .logInteraction({
+        contact_id: contact.id,
+        type: 'whatsapp',
+        notes: null,
+        next_step: todo.text,
+        next_step_date: todo.due ?? null,
+      })
+      .then((result) => {
+        if (result.ok) onRefresh()
+        else flash(result.error)
+      })
+  }
+
+  return (
+    <>
+      <RelationshipPeek
+        person={person}
+        onOpenRecord={openRecord}
+        onToggleTodo={() => flash('Todo toggling needs a dedicated persistence endpoint.')}
+        onAddDate={addDate}
+        onAddTodo={addTodo}
+        onClassify={() => {
+          if (contact.linkedin_url) window.open(contact.linkedin_url, '_blank')
+          else flash('No classify picker is wired in this standalone build yet.')
+        }}
+        onRecheckContext={async () => onRefresh()}
+        onToast={flash}
+      />
+      {toast && <div className="rp-toast on">{toast}</div>}
+    </>
+  )
+}
+
+function relationshipPersonFromContact(contact: ContactDetail): RelationshipPerson {
   const lastDays = daysSince(contact.last_interaction_at)
   const state = healthState(lastDays)
-  const tier = contact.tier && contact.tier >= 1 && contact.tier <= 3 ? contact.tier : 3
-  const tierClass = `t${tier}`
-
-  const pendingTubos = contact.recent_interactions.filter(
+  const tier = contact.tier === 1 || contact.tier === 2 || contact.tier === 3 ? contact.tier : 3
+  const pendingTodos = contact.recent_interactions.filter(
     (i) => i.next_step && (i.next_step_owner === 'me' || i.next_step_owner == null),
   )
   const channels = Array.from(
     new Set(
       [
-        contact.phone ? 'wa' : null,
-        contact.linkedin_url ? 'li' : null,
-        contact.email ? 'mail' : null,
+        contact.phone ? 'whatsapp' : null,
+        contact.linkedin_url ? 'linkedin' : null,
+        contact.email ? 'gmail' : null,
         ...contact.recent_interactions.map((i) =>
           i.channel === 'whatsapp' || i.type === 'whatsapp'
-            ? 'wa'
+            ? 'whatsapp'
             : i.channel === 'linkedin' || i.type === 'linkedin_msg'
-              ? 'li'
+              ? 'linkedin'
               : i.channel === 'email' || i.type === 'email'
-                ? 'mail'
+                ? 'gmail'
                 : null,
         ),
-      ].filter(Boolean) as Array<'wa' | 'li' | 'mail'>,
+      ].filter(Boolean) as RelationshipPerson['channels'],
     ),
   )
-  const keyDates = [
+  const dates: KeyDate[] = [
     contact.birthday ? { label: 'Birthday', date: contact.birthday, soon: true } : null,
     contact.last_interaction_at
       ? { label: 'Last touch', date: formatAgo(lastDays), soon: state === 'cold' }
-      : { label: 'First touch', date: 'Not logged', soon: false },
-    ...pendingTubos
+      : { label: 'First touch', date: 'Not logged' },
+    ...pendingTodos
       .filter((i) => i.next_step_date)
       .slice(0, 2)
       .map((i) => ({ label: 'Next step', date: i.next_step_date ?? '', soon: true })),
-  ].filter(Boolean) as Array<{ label: string; date: string; soon: boolean }>
-  const listChips = [
+  ].filter(Boolean) as KeyDate[]
+  const lists = [
     contact.category,
     contact.status,
     contact.referred_by ? 'Referred' : null,
     contact.health_score != null ? `Health ${contact.health_score}` : null,
   ].filter(Boolean) as string[]
-  const contextText =
-    contact.personal_context ||
-    `No AI context has been saved for ${contact.name} yet. Import chat history or log the next interaction to build memory.`
-  const valueCount = contact.value_logs.length
-  const valueKind = valueCount > 0 ? 'credit' : 'even'
   const primaryOpp = contact.active_opportunities[0]
 
-  return (
-    <div className="rp-scope">
-      <div className="rp-head">
-        <div className={`r-ring ${tierClass}`}>
-          <div className="r-av">
-            {contact.profile_photo_url ? (
-              <img src={contact.profile_photo_url} alt={contact.name} />
-            ) : (
-              <span>{initialsOf(contact.name)}</span>
-            )}
-          </div>
-        </div>
-        <div className="rp-id">
-          <div className="rp-name-row">
-            <span className="rp-name">{contact.name}</span>
-            <span className={`rp-tier ${tierClass}`}>T{tier}</span>
-          </div>
-          <div className="rp-role">
-            {[contact.job_title, contact.company].filter(Boolean).join(' · ') || 'No role saved'}
-          </div>
-        </div>
-      </div>
-
-      <div className="rp-bar">
-        <div className="rp-chans">
-          {channels.length === 0 ? (
-            <span className="rp-chan muted" title="No channel linked">•</span>
-          ) : (
-            channels.map((channel) => (
-              <span key={channel} className={`rp-chan ch-${channel}`} title={channelLabel(channel)}>
-                {channelIcon(channel)}
-              </span>
-            ))
-          )}
-        </div>
-        <span className="rp-bar-meta">
-          <span className={`rp-dot ${state === 'active' ? 'on' : ''}`} />
-          {healthLabel(state)} · {formatAgo(lastDays)}
-        </span>
-      </div>
-
-      <div className="rp-listrow">
-        <div className="rp-lists">
-          {listChips.length > 0 ? (
-            listChips.map((chip) => (
-              <span key={chip} className="rp-listchip">
-                {chip}
-              </span>
-            ))
-          ) : (
-            <span className="rp-listchip quiet">Unclassified</span>
-          )}
-          {contact.linkedin_url && (
-            <a className="rp-classify" href={contact.linkedin_url} target="_blank" rel="noreferrer">
-              LinkedIn ↗
-            </a>
-          )}
-        </div>
-      </div>
-
-      <div className="rp-ctx">
-        <div className="rp-ctx-hd">
-          <span className="rp-ai">✦ AI</span>
-          Context
-          <button className="rp-recheck" title="Refresh contact" onClick={onRefresh}>
-            ↻
-          </button>
-        </div>
-        <p className="rp-ctx-body">{contextText}</p>
-        <div className="rp-facts">
-          {contact.company && <span className="rp-fact">⌘ Company: {contact.company}</span>}
-          {contact.referred_by && <span className="rp-fact">↗ Referred by saved contact</span>}
-          {contact.email && <span className="rp-fact">✉ {contact.email}</span>}
-        </div>
-      </div>
-
-      <button
-        className={`rp-value ${valueKind} ${ledgerOpen ? 'open' : ''}`}
-        aria-expanded={ledgerOpen}
-        onClick={() => setLedgerOpen((open) => !open)}
-      >
-        <span className="rpv-badge">{valueCount > 0 ? '↑' : '='}</span>
-        <span className="rpv-lbl">{valueCount > 0 ? 'Value logged' : 'Value balance'}</span>
-        <span className="rpv-net">{valueCount > 0 ? `+${valueCount}` : '0'}</span>
-        <span className="rpv-chev">⌄</span>
-      </button>
-      {ledgerOpen && (
-        <div className="rp-value-detail">
-          <div className="rpv-col">
-            <div className="rpv-col-hd">
-              You gave <span>{valueCount}</span>
-            </div>
-            {contact.value_logs.length === 0 ? (
-              <div className="rpv-none">Nothing logged yet.</div>
-            ) : (
-              contact.value_logs.slice(0, 4).map((v) => (
-                <div className="rpv-item" key={v.id}>
-                  <span className="rpv-tag">{VALUE_TYPE_LABELS[v.type] ?? v.type}</span>
-                  <div className="rpv-body">
-                    <div className="rpv-tx">{v.description || 'Value exchange'}</div>
-                    <div className="rpv-dt">{v.date}</div>
-                  </div>
-                </div>
-              ))
-            )}
-          </div>
-          <div className="rpv-col">
-            <div className="rpv-col-hd">
-              You received <span>0</span>
-            </div>
-            <div className="rpv-none">No received value logged in this app yet.</div>
-          </div>
-        </div>
-      )}
-
-      <section className="rp-sec">
-        <div className="rp-sec-hd">
-          <span className="rp-lbl">Key dates</span>
-          <button className="rp-add" onClick={() => setLoggingOpen(true)}>
-            + log
-          </button>
-        </div>
-        <div className="rp-dates">
-          {keyDates.map((date) => (
-            <div className="rp-date" key={`${date.label}-${date.date}`}>
-              <span className={`rp-date-ic ${date.soon ? 'soon' : ''}`}>◷</span>
-              <span className="rp-date-lb">{date.label}</span>
-              <span className="rp-date-dt">{date.date}</span>
-            </div>
-          ))}
-        </div>
-      </section>
-
-      <section className="rp-sec">
-        <div className="rp-sec-hd">
-          <span className="rp-lbl">To-do's</span>
-          <span className="rp-ct">{pendingTubos.length}</span>
-          <button className="rp-add" onClick={() => setLoggingOpen(true)}>
-            + add
-          </button>
-        </div>
-        {loggingOpen && (
-          <LogInteractionForm
-            contactId={contact.id}
-            onCancel={() => setLoggingOpen(false)}
-            onSaved={() => {
-              setLoggingOpen(false)
-              onRefresh()
-            }}
-          />
-        )}
-        <div className="rp-todos">
-          {pendingTubos.length === 0 ? (
-            <div className="rp-empty">No pending next steps.</div>
-          ) : (
-            pendingTubos.map((i) => (
-              <div className="rp-todo" key={i.id}>
-                <span className="rp-cb" />
-                <span className="rp-todo-tx">
-                  {i.next_step}
-                  {i.next_step_date && <span className="rp-due">due {i.next_step_date}</span>}
-                </span>
-              </div>
-            ))
-          )}
-        </div>
-      </section>
-
-      <section className="rp-sec">
-        <div className="rp-sec-hd">
-          <span className="rp-lbl">Value ledger</span>
-          {!valueFormOpen && (
-            <button className="rp-add" onClick={() => setValueFormOpen(true)}>
-              + Add
-            </button>
-          )}
-        </div>
-        {valueFormOpen && (
-          <AddValueLogForm
-            contactId={contact.id}
-            onCancel={() => setValueFormOpen(false)}
-            onSaved={() => {
-              setValueFormOpen(false)
-              onRefresh()
-            }}
-          />
-        )}
-      </section>
-
-      {primaryOpp && (
-        <section className="rp-sec">
-          <div className="rp-sec-hd">
-            <span className="rp-lbl">Linked opportunity</span>
-          </div>
-          <div className="rp-opp">
-            <span className="rp-opp-ic">◎</span>
-            <span className="rp-opp-name">{primaryOpp.title}</span>
-            <span className="rp-opp-meta">
-              {primaryOpp.company_name ?? 'No company'} · {primaryOpp.stage}
-            </span>
-            <span className="rp-opp-go">↗</span>
-          </div>
-        </section>
-      )}
-
-      <section className="rp-sec">
-        <div className="rp-sec-hd">
-          <span className="rp-lbl">Recent activity</span>
-          <span className="rp-ct">{contact.interaction_count}</span>
-          <BackfillButton contactId={contact.id} contactName={contact.name} onImported={onRefresh} />
-        </div>
-        {contact.recent_interactions.length === 0 ? (
-          <div className="rp-empty">No interactions yet.</div>
-        ) : (
-          <ul className="rp-timeline">
-            {contact.recent_interactions.slice(0, 6).map((i) => (
-              <li key={i.id} className="rp-tl-item">
-                <div className={`rp-tl-dot tl-${i.type}`} />
-                <div className="rp-tl-content">
-                  <div className="rp-tl-line">
-                    <span>{INTERACTION_TYPE_LABELS[i.type] ?? i.type}</span>
-                    <time>{i.interaction_date}</time>
-                  </div>
-                  {i.notes && <div className="rp-tl-notes">{i.notes}</div>}
-                  {i.next_step && <div className="rp-tl-next">{i.next_step}</div>}
-                </div>
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
-    </div>
-  )
+  return {
+    id: contact.id,
+    name: contact.name,
+    initials: initialsOf(contact.name),
+    avColor: avatarColorForTier(tier),
+    tier,
+    role: contact.job_title || contact.status || contact.category || 'Relationship',
+    company: contact.company || primaryOpp?.company_name || 'Unknown company',
+    channels,
+    active: state === 'active',
+    lastSeen: formatAgo(lastDays),
+    lists: lists.length ? lists : ['Unclassified'],
+    context:
+      contact.personal_context ||
+      `No AI context has been saved for ${contact.name} yet. Import chat history or log the next interaction to build memory.`,
+    facts: [
+      contact.company ? { icon: 'buildings', text: contact.company } : null,
+      contact.referred_by ? { icon: 'arrow-bend-up-right', text: 'Referred by saved contact' } : null,
+      contact.email ? { icon: 'envelope-simple', text: contact.email } : null,
+    ].filter(Boolean) as RelationshipPerson['facts'],
+    ledger: {
+      given: contact.value_logs.length,
+      received: 0,
+      gaveItems: contact.value_logs.slice(0, 4).map((v) => ({
+        tag: VALUE_TYPE_LABELS[v.type] ?? v.type,
+        text: v.description || 'Value exchange',
+        date: v.date,
+      })),
+      receivedItems: [],
+    },
+    dates,
+    todos: pendingTodos.map((i) => ({
+      text: i.next_step ?? '',
+      due: i.next_step_date ?? undefined,
+      done: false,
+    })),
+    intros: [],
+    opp: primaryOpp
+      ? {
+          title: primaryOpp.title,
+          role: primaryOpp.stage,
+          due: 'active',
+          progress: { done: 0, total: 0 },
+          recordId: primaryOpp.id,
+        }
+      : null,
+  }
 }
 
-function channelLabel(channel: 'wa' | 'li' | 'mail'): string {
-  if (channel === 'wa') return 'WhatsApp'
-  if (channel === 'li') return 'LinkedIn'
-  return 'Email'
-}
-
-function channelIcon(channel: 'wa' | 'li' | 'mail'): string {
-  if (channel === 'wa') return 'W'
-  if (channel === 'li') return 'in'
-  return '@'
+function avatarColorForTier(tier: RelationshipPerson['tier']): string {
+  if (tier === 1) return '#7a5b3e'
+  if (tier === 2) return '#46708a'
+  return '#8fa8a0'
 }
 
 // ─── Inline forms ──────────────────────────────────────────────────────────

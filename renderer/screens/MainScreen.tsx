@@ -613,11 +613,14 @@ function AiReviewTable({
     <section className="ai-review ai-review-page">
       <header className="ai-review-header">
         <div>
-          <div className="sync-drawer-eyebrow">WhatsApp AI</div>
-          <h2>Review before reThink</h2>
+          <h2>Review</h2>
           <p>
-            Structured writes stay local until you approve the person.
+            Everything the AI read from your conversations — facts, value, todos, intros — before it touches your records. Validate, edit, approve.
           </p>
+        </div>
+        <div className="ai-review-progress">
+          <strong>{linkedCount}</strong>
+          <span>/ {groups.length || 0} conversations this week</span>
         </div>
         <div className="ai-review-actions">
           <button
@@ -631,25 +634,22 @@ function AiReviewTable({
         </div>
       </header>
       <div className="ai-review-toolbar">
-        <div className="ai-view-chip">
-          <span className="ai-view-icon">▦</span>
-          Pending writes
-        </div>
         <div className="ai-toolbar-stat">
           <strong>{groups.length}</strong>
-          <span>people</span>
+          <span>contacts</span>
         </div>
         <div className="ai-toolbar-stat">
           <strong>{pending.length}</strong>
-          <span>rows</span>
-        </div>
-        <div className="ai-toolbar-stat">
-          <strong>{linkedCount}</strong>
-          <span>linked</span>
+          <span>writes</span>
         </div>
         <div className="ai-toolbar-stat ai-toolbar-warning">
           <strong>{identityCount}</strong>
           <span>need identity</span>
+        </div>
+        <div className="ai-toolbar-tabs">
+          <span className="on">Pending <b>{pending.length}</b></span>
+          <span>Reviewed</span>
+          <span>All</span>
         </div>
       </div>
       <div className="ai-review-table-wrap">

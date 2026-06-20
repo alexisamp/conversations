@@ -10,8 +10,11 @@
   --tier-2: #c9a66b;
   --tier-3: #8fa8a0;
   --bg: #ffffff;
+  --bg-1: #ffffff;
+  --bg-2: #fafafa;
   --bg-soft: #f7f7f5;
   --bg-canvas: #f6f6f6;
+  --bg-active: color-mix(in oklab, var(--gossip) 70%, transparent);
   --bg-sidebar: #ededea;
   --border-1: rgba(0, 55, 32, 0.1);
   --border-2: rgba(0, 55, 32, 0.16);
@@ -33,7 +36,14 @@
   --fw-bold: 700;
   --ls-eyebrow: 0.12em;
   --radius-full: 9999px;
+  --radius-sm: 6px;
+  --radius: 8px;
+  --radius-lg: 10px;
+  --radius-xl: 14px;
   --shadow-card: 0 1px 0 rgba(0, 55, 32, 0.04), 0 0 0 1px rgba(0, 55, 32, 0.04);
+  --shadow-pop: 0 12px 32px rgba(0, 55, 32, 0.12), 0 2px 6px rgba(0, 55, 32, 0.06);
+  --ease-out-soft: cubic-bezier(0.16, 1, 0.3, 1);
+  --dur-fast: 120ms;
   --dur-base: 150ms;
 }
 
@@ -1747,7 +1757,7 @@ body {
 .ai-review {
   flex: 1;
   margin: 0;
-  background: #f7f7f5;
+  background: var(--bg-canvas);
   border: 0;
   border-radius: 0;
   box-shadow: none;
@@ -1767,24 +1777,50 @@ body {
 .ai-review-header {
   display: flex;
   justify-content: space-between;
-  gap: 16px;
-  padding: 10px 14px 8px;
+  align-items: flex-start;
+  gap: 22px;
+  padding: 28px 48px 22px;
   border-bottom: 0;
-  background: #f7f7f5;
+  background: var(--bg-canvas);
 }
 .ai-review-header h2 {
   margin: 0;
   color: var(--burnham);
-  font-family: inherit;
-  font-size: 18px;
-  font-weight: 750;
+  font-family: var(--font-display);
+  font-size: 36px;
+  line-height: 1.02;
+  font-weight: 650;
   letter-spacing: 0;
 }
 .ai-review-header p {
-  margin: 2px 0 0;
+  max-width: 660px;
+  margin: 8px 0 0;
   color: var(--shuttle);
-  font-size: 11px;
-  line-height: 1.35;
+  font-size: 14px;
+  line-height: 1.45;
+}
+.ai-review-progress {
+  min-width: 230px;
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 5px;
+  padding: 13px 18px;
+  border: 1px solid var(--border-1);
+  border-radius: 13px;
+  background: white;
+  box-shadow: var(--shadow-card);
+  font-family: var(--font-mono);
+  color: var(--fg-3);
+}
+.ai-review-progress strong {
+  color: var(--burnham);
+  font-size: 15px;
+}
+.ai-review-progress span {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
 }
 .ai-review-actions {
   display: flex;
@@ -1797,8 +1833,8 @@ body {
   background: var(--burnham);
   color: #fff;
   border: none;
-  border-radius: 7px;
-  padding: 8px 11px;
+  border-radius: 10px;
+  padding: 9px 15px;
   font-size: 12px;
   font-weight: 700;
   cursor: pointer;
@@ -1808,8 +1844,8 @@ body {
   background: #fff;
   color: var(--burnham);
   border: 1px solid var(--mercury);
-  border-radius: 7px;
-  padding: 5px 8px;
+  border-radius: 10px;
+  padding: 8px 12px;
   font-size: 11px;
   font-weight: 600;
   cursor: pointer;
@@ -1820,16 +1856,17 @@ body {
   cursor: not-allowed;
 }
 .ai-review-toolbar {
-  margin: 0 14px;
-  min-height: 40px;
+  margin: 0 48px;
+  min-height: 54px;
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 6px 10px;
+  gap: 20px;
+  padding: 10px 12px;
   background: white;
-  border: 1px solid var(--mercury);
+  border: 1px solid var(--border-1);
   border-bottom: 0;
-  border-radius: 8px 8px 0 0;
+  border-radius: 12px 12px 0 0;
+  box-shadow: var(--shadow-card);
 }
 .ai-view-chip {
   display: inline-flex;
@@ -1856,20 +1893,50 @@ body {
 }
 .ai-toolbar-stat strong {
   color: var(--burnham);
-  font-size: 12px;
+  font-size: 14px;
 }
 .ai-toolbar-warning strong {
   color: #d66a46;
 }
+.ai-toolbar-tabs {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 3px;
+  border-radius: 10px;
+  background: #f0f1ef;
+}
+.ai-toolbar-tabs span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 12px;
+  border-radius: 8px;
+  color: var(--shuttle);
+  font-size: 12px;
+  font-weight: 600;
+}
+.ai-toolbar-tabs span.on {
+  background: white;
+  color: var(--burnham);
+  box-shadow: 0 1px 2px rgba(0, 55, 32, 0.08);
+}
+.ai-toolbar-tabs b {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--moss);
+}
 .ai-review-table-wrap {
-  margin: 0 14px 14px;
+  margin: 0 48px 40px;
   flex: 1;
   min-height: 0;
   overflow: auto;
   background: white;
-  border: 1px solid var(--mercury);
+  border: 1px solid var(--border-1);
   border-top: 0;
-  border-radius: 0 0 8px 8px;
+  border-radius: 0 0 12px 12px;
 }
 .ai-review-table {
   width: max-content;
