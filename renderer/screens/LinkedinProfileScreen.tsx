@@ -27,8 +27,10 @@ export function LinkedinProfileScreen({ state }: Props) {
   useEffect(() => {
     let cancelled = false
     setLookup({ kind: 'loading' })
-    window.conv.contact
-      .byLinkedinUrl(state.url)
+    const lookupPromise = state.contactId
+      ? window.conv.contact.byId(state.contactId)
+      : window.conv.contact.byLinkedinUrl(state.url)
+    lookupPromise
       .then((contact) => {
         if (cancelled) return
         if (contact) setLookup({ kind: 'found', contact })
@@ -42,11 +44,13 @@ export function LinkedinProfileScreen({ state }: Props) {
     return () => {
       cancelled = true
     }
-  }, [state.url])
+  }, [state.contactId, state.url])
 
   async function refetch() {
     setLookup({ kind: 'loading' })
-    const contact = await window.conv.contact.byLinkedinUrl(state.url)
+    const contact = state.contactId
+      ? await window.conv.contact.byId(state.contactId)
+      : await window.conv.contact.byLinkedinUrl(state.url)
     if (contact) setLookup({ kind: 'found', contact })
     else setLookup({ kind: 'not-found' })
   }
@@ -68,21 +72,30 @@ export function LinkedinProfileScreen({ state }: Props) {
 
   async function handleAttach(target: ContactBrief) {
     setAttachingId(target.id)
-    const result = await window.conv.contact.enrichFromLinkedinProfile({
-      contact_id: target.id,
-      name: state.name,
-      jobTitle: state.jobTitle,
-      company: state.company,
-      companyLinkedinUrl: state.companyLinkedinUrl,
-      companyLogoUrl: state.companyLogoUrl,
-      location: state.location,
-      about: state.about,
-      photoUrl: state.photoUrl,
-      linkedinUrl: state.url,
-    })
+    const result = state.conversationId
+      ? await window.conv.identity.linkChatToContact({
+          chat_id: `linkedin:${state.conversationId}`,
+          contact_id: target.id,
+          wa_name: state.name,
+          phone: null,
+        })
+      : await window.conv.contact.enrichFromLinkedinProfile({
+          contact_id: target.id,
+          name: state.name,
+          jobTitle: state.jobTitle,
+          company: state.company,
+          companyLinkedinUrl: state.companyLinkedinUrl,
+          companyLogoUrl: state.companyLogoUrl,
+          location: state.location,
+          about: state.about,
+          photoUrl: state.photoUrl,
+          linkedinUrl: state.url,
+        })
     setAttachingId(null)
     if (result.ok) {
-      await refetch()
+      const contact = await window.conv.contact.byId(target.id)
+      if (contact) setLookup({ kind: 'found', contact })
+      else await refetch()
     } else {
       setCreateError(result.error)
     }

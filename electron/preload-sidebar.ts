@@ -136,6 +136,8 @@ export type LiState =
   | { kind: 'none' }
   | {
       kind: 'profile'
+      contactId?: string | null
+      conversationId?: string | null
       url: string
       slug: string
       name: string | null
@@ -308,6 +310,8 @@ const api = {
     },
   },
   contact: {
+    byId: (contactId: string): Promise<ContactDetail | null> =>
+      ipcRenderer.invoke('contact:byId', contactId),
     byPhone: (phone: string): Promise<ContactDetail | null> =>
       ipcRenderer.invoke('contact:byPhone', phone),
     byName: (name: string): Promise<ContactDetail | null> =>

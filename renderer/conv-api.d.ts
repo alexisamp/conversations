@@ -140,6 +140,8 @@ export type LiState =
   | { kind: 'none' }
   | {
       kind: 'profile'
+      contactId?: string | null
+      conversationId?: string | null
       url: string
       slug: string
       name: string | null
@@ -321,6 +323,7 @@ export type ConvApi = {
     onChanged(cb: (status: AuthStatus) => void): void
   }
   contact: {
+    byId(contactId: string): Promise<ContactDetail | null>
     byPhone(phone: string): Promise<ContactDetail | null>
     byName(name: string): Promise<ContactDetail | null>
     byLinkedinUrl(url: string): Promise<ContactDetail | null>

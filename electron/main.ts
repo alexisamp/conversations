@@ -2542,6 +2542,8 @@ function registerIpc(): void {
         const url = resolvedContact?.linkedin_url || rawUrl
         liContext = {
           kind: 'profile',
+          contactId: resolvedContactId,
+          conversationId,
           url,
           slug: profile.public_id || resolvedContact?.linkedin_url || profile.urn,
           name: resolvedContact?.name || profile.full_name,

@@ -310,6 +310,12 @@ async function findContactByName(name: string): Promise<ContactDetail | null> {
   return null
 }
 
+async function findContactById(contactId: string): Promise<ContactDetail | null> {
+  const id = contactId.trim()
+  if (!id) return null
+  return loadContactDetail(id)
+}
+
 async function loadContactDetail(contactId: string): Promise<ContactDetail | null> {
   const supabase = getSupabase()
 
@@ -814,17 +820,46 @@ async function searchContactsByName(query: string, limit = 8): Promise<ContactBr
   const q = query.trim()
   if (q.length < 2) return []
   const supabase = getSupabase()
-  const { data, error } = await supabase
-    .from('outreach_logs')
-    .select(BRIEF_COLUMNS)
-    .ilike('name', `%${q}%`)
-    .order('name', { ascending: true })
-    .limit(limit)
-  if (error) {
-    console.error('[contacts] search failed:', error)
-    return []
+  const rowsById = new Map<string, ContactBrief>()
+  for (const candidate of contactNameSearchCandidates(q)) {
+    const { data, error } = await supabase
+      .from('outreach_logs')
+      .select(BRIEF_COLUMNS)
+      .ilike('name', `%${candidate}%`)
+      .order('name', { ascending: true })
+      .limit(limit)
+    if (error) {
+      console.error('[contacts] search failed:', error)
+      continue
+    }
+    for (const row of (data as ContactBrief[] | null) ?? []) {
+      rowsById.set(row.id, row)
+      if (rowsById.size >= limit) break
+    }
+    if (rowsById.size >= limit) break
   }
-  return (data as ContactBrief[] | null) ?? []
+  return [...rowsById.values()]
+}
+
+function contactNameSearchCandidates(name: string): string[] {
+  const cleaned = name
+    .replace(/\s+/g, ' ')
+    .replace(/[.,]+$/g, '')
+    .trim()
+  if (!cleaned) return []
+  const candidates = new Set<string>([cleaned])
+  const withoutTrailingInitials = cleaned
+    .replace(/\s+[A-ZÁÉÍÓÚÑ]\.?$/i, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+  if (withoutTrailingInitials && withoutTrailingInitials !== cleaned) {
+    candidates.add(withoutTrailingInitials)
+  }
+  const parts = withoutTrailingInitials.split(' ').filter(Boolean)
+  if (parts.length >= 2) {
+    candidates.add(`${parts[0]} ${parts[parts.length - 1]}`)
+  }
+  return [...candidates].filter((candidate) => candidate.length >= 2)
 }
 
 // ─── Create + attach existing ────────────────────────────────────────────────
@@ -1473,6 +1508,7 @@ async function attachWaNameToExistingContact(input: {
 // ─── IPC registration ────────────────────────────────────────────────────────
 
 export function registerContactIpc(): void {
+  ipcMain.handle('contact:byId', (_event, contactId: string) => findContactById(contactId))
   ipcMain.handle('contact:byPhone', (_event, phone: string) => findContactByPhone(phone))
   ipcMain.handle('contact:byName', (_event, name: string) => findContactByName(name))
   ipcMain.handle(
