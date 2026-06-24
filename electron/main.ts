@@ -45,6 +45,7 @@ import {
   syncLinkedinConversation,
   syncLinkedinInbox,
 } from './linkedin/sync'
+import { getLinkedinSession } from './linkedin/client'
 
 // Cache phone → contactId so we don't re-resolve on every message.
 // Populated lazily when a message arrives for a new phone.
@@ -87,6 +88,8 @@ let insightRunner: DailyInsightRunner | null = null
 let insightTimer: ReturnType<typeof setTimeout> | null = null
 let sidebarVisible = true
 let activeTab: Tab = 'wa'
+let linkedinMode: 'messages' | 'web' = 'messages'
+let linkedinWebPurpose: 'signin' | 'browse' | null = null
 let overlayVisible = false
 
 // Cached context per tab so we can re-emit on tab switch.
@@ -518,6 +521,20 @@ async function createMainWindow(): Promise<void> {
   // Mirror the WhatsApp zoom (0.8) so LinkedIn also renders denser.
   linkedinView.webContents.on('did-finish-load', () => {
     linkedinView?.webContents.setZoomFactor(0.8)
+    if (linkedinWebPurpose === 'signin') {
+      void getLinkedinSession().then((state) => {
+        if (!state.authenticated || activeTab !== 'li' || linkedinMode !== 'web') return
+        linkedinWebPurpose = null
+        linkedinMode = 'messages'
+        refreshLayout()
+        void syncLinkedinInbox(1)
+          .catch((err) => console.warn('[linkedin] post-signin sync failed:', err instanceof Error ? err.message : err))
+          .finally(() => {
+            linkedinMessagesView?.webContents.send('linkedin:updated')
+            publishSyncStatus()
+          })
+      })
+    }
   })
   linkedinView.webContents.setWindowOpenHandler(({ url }) => {
     // If LinkedIn opens a new window to another LI profile, navigate in-place.
@@ -700,7 +717,7 @@ function toggleSearchOverlay(): void {
 
 function activeContentView(): WebContentsView | null {
   if (activeTab === 'wa') return whatsappView
-  if (activeTab === 'li') return linkedinMessagesView
+  if (activeTab === 'li') return linkedinMode === 'web' ? linkedinView : linkedinMessagesView
   return sidebarView
 }
 
@@ -735,10 +752,20 @@ function refreshLayout(): void {
     sidebarView.setVisible(true)
     return
   }
-  const active = activeTab === 'wa' ? whatsappView : linkedinMessagesView
-  const inactive = activeTab === 'wa' ? [linkedinMessagesView] : [whatsappView]
-  linkedinView.setBounds({ x: 0, y: 0, width: 0, height: 0 })
-  linkedinView.setVisible(false)
+  const active = activeTab === 'wa'
+    ? whatsappView
+    : linkedinMode === 'web'
+      ? linkedinView
+      : linkedinMessagesView
+  const inactive = activeTab === 'wa'
+    ? [linkedinMessagesView, linkedinView]
+    : linkedinMode === 'web'
+      ? [whatsappView, linkedinMessagesView]
+      : [whatsappView, linkedinView]
+  if (activeTab !== 'li' || linkedinMode !== 'web') {
+    linkedinView.setBounds({ x: 0, y: 0, width: 0, height: 0 })
+    linkedinView.setVisible(false)
+  }
   applyLayout({
     win: mainWindow,
     tabBarView,
@@ -1375,17 +1402,20 @@ function buildMenu(): void {
             }
           },
         },
-        {
-          label: 'Home',
-          accelerator: 'CmdOrCtrl+Shift+H',
-          click: () => {
-            if (activeTab === 'wa') {
-              activeContentView()?.webContents.loadURL(WHATSAPP_URL).catch(() => {})
-            } else if (activeTab === 'li') {
-              linkedinMessagesView?.webContents.reload()
-            }
-          },
-        },
+	        {
+	          label: 'Home',
+	          accelerator: 'CmdOrCtrl+Shift+H',
+	          click: () => {
+	            if (activeTab === 'wa') {
+	              activeContentView()?.webContents.loadURL(WHATSAPP_URL).catch(() => {})
+	            } else if (activeTab === 'li') {
+	              linkedinMode = 'messages'
+	              linkedinWebPurpose = null
+	              refreshLayout()
+	              linkedinMessagesView?.webContents.reload()
+	            }
+	          },
+	        },
         { type: 'separator' },
         {
           label: 'Search LinkedIn',
@@ -2320,11 +2350,16 @@ function registerIpc(): void {
   ipcMain.on('tab:reload', () => {
     activeContentView()?.webContents.reload()
   })
-  ipcMain.on('tab:home', () => {
-    if (activeTab === 'ai') return
-    if (activeTab === 'wa') activeContentView()?.webContents.loadURL(WHATSAPP_URL).catch(() => {})
-    else if (activeTab === 'li') linkedinMessagesView?.webContents.reload()
-  })
+	  ipcMain.on('tab:home', () => {
+	    if (activeTab === 'ai') return
+	    if (activeTab === 'wa') activeContentView()?.webContents.loadURL(WHATSAPP_URL).catch(() => {})
+	    else if (activeTab === 'li') {
+	      linkedinMode = 'messages'
+	      linkedinWebPurpose = null
+	      refreshLayout()
+	      linkedinMessagesView?.webContents.reload()
+	    }
+	  })
   ipcMain.on('tab:search', () => {
     showSearchOverlay()
   })
@@ -2427,10 +2462,30 @@ function registerIpc(): void {
   // LinkedIn preload → store + gate
   ipcMain.on('li:profile:changed', (_event, payload: unknown) => {
     console.log('[main] li:profile:changed →', payload)
+    if (linkedinMode !== 'web') return
     liContext = payload
-    if (activeTab === 'li') {
+    if (activeTab === 'li' && linkedinMode === 'web') {
       sidebarView?.webContents.send('sidebar:context', { tab: 'li', state: payload })
     }
+  })
+
+  ipcMain.handle('linkedin:show-signin', async () => {
+    if (!linkedinView) return { ok: false, error: 'LinkedIn view not ready' }
+    linkedinMode = 'web'
+    linkedinWebPurpose = 'signin'
+    switchTab('li')
+    refreshLayout()
+    await linkedinView.webContents.loadURL(LINKEDIN_URL)
+    return { ok: true }
+  })
+  ipcMain.handle('linkedin:show-messages', async () => {
+    linkedinMode = 'messages'
+    linkedinWebPurpose = null
+    switchTab('li')
+    refreshLayout()
+    linkedinMessagesView?.webContents.send('linkedin:updated')
+    sidebarView?.webContents.send('sidebar:context', { tab: 'li', state: liContext })
+    return { ok: true }
   })
 
   ipcMain.handle('linkedin:sync-inbox', async () => {
@@ -2447,51 +2502,65 @@ function registerIpc(): void {
     return linkedinThread(conversationId)
   })
   ipcMain.handle('linkedin:select-conversation', async (_event, conversationId: string) => {
-    const thread = linkedinThread(conversationId)
-    const urns = parseJsonArray(thread.conversation?.participant_urns)
-    const profile = urns[0] ? linkedinProfileByUrn(urns[0]) : null
-    if (!profile) {
+    linkedinMode = 'messages'
+    linkedinWebPurpose = null
+    try {
+      const thread = linkedinThread(conversationId)
+      const urns = parseJsonArray(thread.conversation?.participant_urns)
+      const profile = urns[0] ? linkedinProfileByUrn(urns[0]) : null
+      if (!profile) {
+        liContext = { kind: 'none' }
+      } else {
+        const rawUrl = profile.linkedin_url || (profile.public_id ? `https://www.linkedin.com/in/${profile.public_id}` : '')
+        const resolvedContactId = await resolveLinkedinContact({
+          conversationId,
+          linkedinUrl: rawUrl || null,
+          name: profile.full_name,
+        }).catch((err) => {
+          console.warn('[linkedin] contact resolution failed:', err instanceof Error ? err.message : err)
+          return null
+        })
+        const resolvedContact = resolvedContactId
+          ? await linkedinResolvedContactSummary(resolvedContactId).catch((err) => {
+              console.warn('[linkedin] contact summary failed:', err instanceof Error ? err.message : err)
+              return null
+            })
+          : null
+        if (resolvedContactId) {
+          const now = Date.now()
+          getDb().prepare(`
+            UPDATE linkedin_conversations
+            SET selected_contact_id = ?, updated_at = ?
+            WHERE id = ?
+          `).run(resolvedContactId, now, conversationId)
+          getDb().prepare(`
+            UPDATE linkedin_messages
+            SET contact_id = ?
+            WHERE conversation_id = ?
+          `).run(resolvedContactId, conversationId)
+        }
+        const url = resolvedContact?.linkedin_url || rawUrl
+        liContext = {
+          kind: 'profile',
+          url,
+          slug: profile.public_id || resolvedContact?.linkedin_url || profile.urn,
+          name: resolvedContact?.name || profile.full_name,
+          jobTitle: profile.occupation,
+          company: null,
+          companyLinkedinUrl: null,
+          companyLogoUrl: null,
+          location: profile.location,
+          about: null,
+          photoUrl: profile.picture_url,
+          avatarDataUrl: null,
+        }
+      }
+    } catch (err) {
+      console.warn('[linkedin] select conversation failed:', err instanceof Error ? err.message : err)
       liContext = { kind: 'none' }
-    } else {
-      const rawUrl = profile.linkedin_url || (profile.public_id ? `https://www.linkedin.com/in/${profile.public_id}` : '')
-      const resolvedContactId = await resolveLinkedinContact({
-        conversationId,
-        linkedinUrl: rawUrl || null,
-        name: profile.full_name,
-      })
-      const resolvedContact = resolvedContactId
-        ? await linkedinResolvedContactSummary(resolvedContactId)
-        : null
-      if (resolvedContactId) {
-        const now = Date.now()
-        getDb().prepare(`
-          UPDATE linkedin_conversations
-          SET selected_contact_id = ?, updated_at = ?
-          WHERE id = ?
-        `).run(resolvedContactId, now, conversationId)
-        getDb().prepare(`
-          UPDATE linkedin_messages
-          SET contact_id = ?
-          WHERE conversation_id = ?
-        `).run(resolvedContactId, conversationId)
-      }
-      const url = resolvedContact?.linkedin_url || rawUrl
-      liContext = {
-        kind: 'profile',
-        url,
-        slug: profile.public_id || resolvedContact?.linkedin_url || profile.urn,
-        name: resolvedContact?.name || profile.full_name,
-        jobTitle: profile.occupation,
-        company: null,
-        companyLinkedinUrl: null,
-        companyLogoUrl: null,
-        location: profile.location,
-        about: null,
-        photoUrl: profile.picture_url,
-        avatarDataUrl: null,
-      }
     }
     if (activeTab === 'li') {
+      refreshLayout()
       sidebarView?.webContents.send('sidebar:context', { tab: 'li', state: liContext })
     }
     return { ok: true }
@@ -2519,7 +2588,10 @@ function registerIpc(): void {
       return { ok: false, error: 'Not a LinkedIn URL' }
     }
     try {
+      linkedinMode = 'web'
+      linkedinWebPurpose = 'browse'
       switchTab('li')
+      refreshLayout()
       await linkedinView.webContents.loadURL(url)
       return { ok: true }
     } catch (err) {
@@ -2542,12 +2614,15 @@ function registerIpc(): void {
   ipcMain.on('overlay:hide', () => hideSearchOverlay())
   ipcMain.on('overlay:submit', (_event, query: string) => {
     if (typeof query !== 'string' || !query.trim()) return
-    const q = query.trim()
-    const url = `https://www.linkedin.com/search/results/people/?keywords=${encodeURIComponent(q)}`
-    hideSearchOverlay()
-    switchTab('li')
-    linkedinView?.webContents.loadURL(url).catch(() => {})
-  })
+	    const q = query.trim()
+	    const url = `https://www.linkedin.com/search/results/people/?keywords=${encodeURIComponent(q)}`
+	    hideSearchOverlay()
+	    linkedinMode = 'web'
+	    linkedinWebPurpose = 'browse'
+	    switchTab('li')
+	    refreshLayout()
+	    linkedinView?.webContents.loadURL(url).catch(() => {})
+	  })
 }
 
 // ─── Lifecycle ───────────────────────────────────────────────────────

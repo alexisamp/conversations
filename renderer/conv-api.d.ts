@@ -416,6 +416,8 @@ export type ConvApi = {
     navigate(url: string): Promise<{ ok: boolean; error?: string }>
   }
   linkedin: {
+    showSignin(): Promise<{ ok: boolean; error?: string }>
+    showMessages(): Promise<{ ok: boolean; error?: string }>
     syncInbox(): Promise<{ conversations: number; messages: number }>
     getInbox(): Promise<LinkedinInbox>
     getThread(conversationId: string): Promise<LinkedinThread>

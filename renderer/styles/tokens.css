@@ -917,6 +917,26 @@ body {
   font-size: 12px;
 }
 
+.li-inbox-warning {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.li-inbox-warning button {
+  flex: 0 0 auto;
+  border: 1px solid #e3c66a;
+  background: #fffdf5;
+  color: #72510f;
+  border-radius: 7px;
+  height: 28px;
+  padding: 0 10px;
+  font: inherit;
+  font-weight: 650;
+  cursor: pointer;
+}
+
 .li-inbox-error {
   background: #fff0f0;
   color: #8c2d2d;

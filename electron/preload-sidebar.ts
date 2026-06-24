@@ -441,6 +441,10 @@ const api = {
       ipcRenderer.invoke('li:navigate', url),
   },
   linkedin: {
+    showSignin: (): Promise<{ ok: boolean; error?: string }> =>
+      ipcRenderer.invoke('linkedin:show-signin'),
+    showMessages: (): Promise<{ ok: boolean; error?: string }> =>
+      ipcRenderer.invoke('linkedin:show-messages'),
     syncInbox: (): Promise<{ conversations: number; messages: number }> =>
       ipcRenderer.invoke('linkedin:sync-inbox'),
     getInbox: (): Promise<{ authenticated: boolean; conversations: LinkedinConversation[]; error?: string }> =>

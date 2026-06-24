@@ -29,7 +29,13 @@ export function LinkedinMessagesScreen() {
       await window.conv.linkedin.syncInbox()
       await loadInbox()
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'LinkedIn sync failed')
+      const message = err instanceof Error ? err.message : 'LinkedIn sync failed'
+      if (/not authenticated|session|sign in/i.test(message)) {
+        setAuthenticated(false)
+        setError(null)
+      } else {
+        setError(message)
+      }
       await loadInbox().catch(() => {})
     } finally {
       setSyncing(false)
@@ -39,7 +45,9 @@ export function LinkedinMessagesScreen() {
   async function selectConversation(conversation: LinkedinConversation) {
     setSelectedId(conversation.id)
     setThread({ kind: 'loading', conversationId: conversation.id })
-    await window.conv.linkedin.selectConversation(conversation.id)
+    void window.conv.linkedin.selectConversation(conversation.id).catch((err) => {
+      console.warn('LinkedIn sidebar context failed', err)
+    })
     try {
       const result = await window.conv.linkedin.getThread(conversation.id)
       setThread({
@@ -83,7 +91,10 @@ export function LinkedinMessagesScreen() {
         </div>
         {!authenticated && (
           <div className="li-inbox-warning">
-            Sign in to LinkedIn in Conversations, then sync again.
+            <span>LinkedIn session expired. Cached chats are shown.</span>
+            <button onClick={() => window.conv.linkedin.showSignin()}>
+              Sign in
+            </button>
           </div>
         )}
         {error && <div className="li-inbox-error">{error}</div>}
@@ -215,4 +226,3 @@ function formatMessageTime(timestamp: number) {
     minute: '2-digit',
   }).format(new Date(timestamp))
 }
-
