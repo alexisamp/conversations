@@ -931,14 +931,50 @@ async function resolveLinkedinContact(input: {
     }
   }
   if (input.name && input.name.trim().length >= 2) {
-    const { data } = await supabase
-      .from('outreach_logs')
-      .select('id')
-      .ilike('name', input.name.trim())
-      .limit(2)
-    if (data?.length === 1) return (data[0] as { id: string }).id
+    for (const candidate of linkedinNameCandidates(input.name)) {
+      const { data } = await supabase
+        .from('outreach_logs')
+        .select('id')
+        .ilike('name', candidate)
+        .limit(2)
+      if (data?.length === 1) return (data[0] as { id: string }).id
+    }
   }
   return null
+}
+
+function linkedinNameCandidates(name: string): string[] {
+  const cleaned = name
+    .replace(/\s+/g, ' ')
+    .replace(/[.,]+$/g, '')
+    .trim()
+  if (!cleaned) return []
+  const candidates = new Set<string>([cleaned])
+  const withoutTrailingInitials = cleaned
+    .replace(/\s+[A-ZÁÉÍÓÚÑ]\.?$/i, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+  if (withoutTrailingInitials && withoutTrailingInitials !== cleaned) {
+    candidates.add(withoutTrailingInitials)
+  }
+  const parts = withoutTrailingInitials.split(' ').filter(Boolean)
+  if (parts.length >= 2) {
+    candidates.add(`${parts[0]} ${parts[parts.length - 1]}`)
+  }
+  return [...candidates].filter((candidate) => candidate.length >= 2)
+}
+
+async function linkedinResolvedContactSummary(contactId: string): Promise<{
+  id: string
+  name: string | null
+  linkedin_url: string | null
+} | null> {
+  const { data } = await getSupabase()
+    .from('outreach_logs')
+    .select('id, name, linkedin_url')
+    .eq('id', contactId)
+    .maybeSingle()
+  return (data as { id: string; name: string | null; linkedin_url: string | null } | null) ?? null
 }
 
 function whatsappBridgeIdentifiers(input: {
@@ -2417,12 +2453,34 @@ function registerIpc(): void {
     if (!profile) {
       liContext = { kind: 'none' }
     } else {
-      const url = profile.linkedin_url || (profile.public_id ? `https://www.linkedin.com/in/${profile.public_id}` : '')
+      const rawUrl = profile.linkedin_url || (profile.public_id ? `https://www.linkedin.com/in/${profile.public_id}` : '')
+      const resolvedContactId = await resolveLinkedinContact({
+        conversationId,
+        linkedinUrl: rawUrl || null,
+        name: profile.full_name,
+      })
+      const resolvedContact = resolvedContactId
+        ? await linkedinResolvedContactSummary(resolvedContactId)
+        : null
+      if (resolvedContactId) {
+        const now = Date.now()
+        getDb().prepare(`
+          UPDATE linkedin_conversations
+          SET selected_contact_id = ?, updated_at = ?
+          WHERE id = ?
+        `).run(resolvedContactId, now, conversationId)
+        getDb().prepare(`
+          UPDATE linkedin_messages
+          SET contact_id = ?
+          WHERE conversation_id = ?
+        `).run(resolvedContactId, conversationId)
+      }
+      const url = resolvedContact?.linkedin_url || rawUrl
       liContext = {
         kind: 'profile',
         url,
-        slug: profile.public_id || profile.urn,
-        name: profile.full_name,
+        slug: profile.public_id || resolvedContact?.linkedin_url || profile.urn,
+        name: resolvedContact?.name || profile.full_name,
         jobTitle: profile.occupation,
         company: null,
         companyLinkedinUrl: null,
