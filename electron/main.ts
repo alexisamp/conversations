@@ -38,6 +38,7 @@ import { DailyInsightRunner, nextInsightRunAt } from './ai/daily-insights'
 import { getSupabase } from './supabase/client'
 import { summarizeSession } from './ai/gemini'
 import { phoneVariants } from './utils/phone'
+import { linkedinSlug, linkedinUrlVariants } from './utils/linkedin'
 import { autoUpdater } from 'electron-updater'
 import {
   linkedinInbox,
@@ -917,7 +918,6 @@ async function resolveLinkedinContact(input: {
 }): Promise<string | null> {
   const supabase = getSupabase()
   if (input.linkedinUrl) {
-    const { linkedinSlug, linkedinUrlVariants } = await import('./utils/linkedin')
     const variants = linkedinUrlVariants(input.linkedinUrl)
     const slug = linkedinSlug(input.linkedinUrl)
     const { data: channel } = await supabase
@@ -1134,7 +1134,6 @@ async function linkLinkedinConversationToContact(input: {
     const linkedinUrl = profile?.linkedin_url || (profile?.public_id ? `https://www.linkedin.com/in/${profile.public_id}` : null)
 
     if (linkedinUrl) {
-      const { linkedinUrlVariants } = await import('./utils/linkedin')
       const identifiers = linkedinUrlVariants(linkedinUrl)
       const { data: existingRows, error: lookupError } = await supabase
         .from('contact_channels')
