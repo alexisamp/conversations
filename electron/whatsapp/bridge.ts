@@ -5,6 +5,7 @@ import * as fs from 'fs'
 import * as os from 'os'
 import * as path from 'path'
 import {
+  latestBridgeMessageAt,
   latestBridgeMessageSummary,
   upsertBridgeMessages,
   type BridgeMessageInput,
@@ -200,8 +201,29 @@ export class WhatsappBridge {
     let handle: Database.Database | null = null
     try {
       handle = new Database(dbPath, { readonly: true, fileMustExist: true })
-      const rows = handle
-        .prepare(`
+      const latestLocal = latestBridgeMessageAt()
+      const sinceIso = latestLocal ? new Date(latestLocal - 5 * 60 * 1000).toISOString() : null
+      const rows = sinceIso
+        ? handle
+          .prepare(`
+            SELECT
+              messages.id,
+              messages.chat_jid,
+              messages.sender,
+              messages.content,
+              messages.timestamp,
+              messages.is_from_me,
+              messages.media_type,
+              chats.name AS chat_name
+            FROM messages
+            JOIN chats ON chats.jid = messages.chat_jid
+            WHERE messages.timestamp >= ?
+            ORDER BY messages.timestamp ASC
+            LIMIT ?
+          `)
+          .all(sinceIso, limit) as SealjayMessageRow[]
+        : handle
+          .prepare(`
           SELECT
             messages.id,
             messages.chat_jid,
@@ -216,7 +238,7 @@ export class WhatsappBridge {
           ORDER BY messages.timestamp DESC
           LIMIT ?
         `)
-        .all(limit) as SealjayMessageRow[]
+          .all(limit) as SealjayMessageRow[]
 
       const inputs: BridgeMessageInput[] = []
       for (const row of rows) {

@@ -601,8 +601,7 @@ function AiReviewTable({
   const visibleOutputs = outputs.filter((output) => output.status === 'pending' || output.status === 'failed')
   const identityIssues = issues.filter((issue) =>
     issue.kind === 'identity_resolution' &&
-    issue.status === 'open' &&
-    Boolean(issue.chat_key?.endsWith('@s.whatsapp.net')),
+    issue.status === 'open',
   )
   const pending = visibleOutputs.filter((output) => output.status === 'pending' || output.status === 'failed')
   const groups = aiReviewGroups(visibleOutputs, identityIssues)
@@ -1093,7 +1092,10 @@ function outputPayload(output: AiStagedOutput): Record<string, unknown> {
 function outputClassification(output: AiStagedOutput): { label: string; detail: string | null } {
   const payload = outputPayload(output)
   if (output.target === 'interaction') {
-    return { label: 'Will write: activity log', detail: 'interactions + whatsapp window' }
+    return {
+      label: 'Will write: activity log',
+      detail: `interactions + ${String(payload.channel ?? 'conversation')} window`,
+    }
   }
   if (output.target === 'contact_fact') {
     if (isKeyDateOutput(output)) {

@@ -9,8 +9,12 @@ import {
   getDb,
   latestAiRunOutputs,
   latestAiStagedOutputs,
+  linkedinConversation,
+  linkedinMessagesForInsightRange,
+  linkedinProfileByUrn,
   latestDailyAiRuns,
   markBridgeMessagesSynced,
+  markLinkedinMessagesSynced,
   pendingAiStagedOutputs,
   pruneSyncedBridgeMessages,
   recordAiOutput,
@@ -24,6 +28,7 @@ import {
   type AiStagedOutputRow,
   type BridgeMessageRow,
   type DailyAiRunRow,
+  type LinkedinMessageRow,
 } from '../db/local'
 import { getSupabase } from '../supabase/client'
 import { extractWhatsappInsights } from './gemini'
@@ -39,9 +44,16 @@ type ResolveContact = (input: {
   waName: string | null
 }) => Promise<string | null>
 
+type ResolveLinkedinContact = (input: {
+  conversationId: string
+  linkedinUrl: string | null
+  name: string | null
+}) => Promise<string | null>
+
 type DailyInsightRunnerOptions = {
   bridge: WhatsappBridge
   resolveContact: ResolveContact
+  resolveLinkedinContact?: ResolveLinkedinContact
   publishStatus: () => void
 }
 
@@ -50,6 +62,13 @@ type Window = {
   chatName: string | null
   phone: string | null
   messages: BridgeMessageRow[]
+}
+
+type LinkedinWindow = {
+  conversationId: string
+  title: string
+  linkedinUrl: string | null
+  messages: LinkedinMessageRow[]
 }
 
 export type InsightRunResult = {
@@ -257,6 +276,50 @@ function groupWindows(messages: BridgeMessageRow[]): Window[] {
   return windows
 }
 
+function parseStringList(value: string | null | undefined): string[] {
+  if (!value) return []
+  try {
+    const parsed = JSON.parse(value)
+    return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === 'string') : []
+  } catch {
+    return []
+  }
+}
+
+function groupLinkedinWindows(messages: LinkedinMessageRow[]): LinkedinWindow[] {
+  const byConversation = new Map<string, LinkedinMessageRow[]>()
+  for (const message of messages) {
+    const arr = byConversation.get(message.conversation_id) ?? []
+    arr.push(message)
+    byConversation.set(message.conversation_id, arr)
+  }
+
+  const windows: LinkedinWindow[] = []
+  for (const [conversationId, rows] of byConversation) {
+    const conversation = linkedinConversation(conversationId)
+    const urn = parseStringList(conversation?.participant_urns)[0] ?? null
+    const profile = urn ? linkedinProfileByUrn(urn) : null
+    const title = parseStringList(conversation?.participant_names)[0] || profile?.full_name || 'LinkedIn contact'
+    const linkedinUrl = profile?.linkedin_url || (profile?.public_id ? `https://www.linkedin.com/in/${profile.public_id}` : null)
+    const sorted = [...rows].sort((a, b) => a.created_at_ms - b.created_at_ms)
+    let current: LinkedinMessageRow[] = []
+    let start = sorted[0]?.created_at_ms ?? 0
+    for (const row of sorted) {
+      const crossesWindow = current.length > 0 && row.created_at_ms - start > WINDOW_MS
+      const crossesLocalDate = current.length > 0 && localDate(row.created_at_ms) !== localDate(start)
+      if (crossesWindow || crossesLocalDate) {
+        windows.push({ conversationId, title, linkedinUrl, messages: current })
+        current = [row]
+        start = row.created_at_ms
+      } else {
+        current.push(row)
+      }
+    }
+    if (current.length > 0) windows.push({ conversationId, title, linkedinUrl, messages: current })
+  }
+  return windows
+}
+
 function conversationText(messages: BridgeMessageRow[]): string {
   return messages
     .map((message) => {
@@ -266,8 +329,22 @@ function conversationText(messages: BridgeMessageRow[]): string {
     .join('\n')
 }
 
+function linkedinConversationText(messages: LinkedinMessageRow[]): string {
+  return messages
+    .map((message) => {
+      const speaker = message.is_from_me ? 'Yo' : message.sender_name || 'Ellos'
+      return `${speaker}: ${message.body || '[media]'}`
+    })
+    .join('\n')
+}
+
 function dominantDirection(messages: BridgeMessageRow[]): 'inbound' | 'outbound' {
   const outbound = messages.filter((message) => message.direction === 'outbound').length
+  return outbound >= messages.length - outbound ? 'outbound' : 'inbound'
+}
+
+function dominantLinkedinDirection(messages: LinkedinMessageRow[]): 'inbound' | 'outbound' {
+  const outbound = messages.filter((message) => message.is_from_me).length
   return outbound >= messages.length - outbound ? 'outbound' : 'inbound'
 }
 
@@ -275,6 +352,12 @@ function sourceKey(win: Window): string {
   const first = win.messages[0]
   const last = win.messages[win.messages.length - 1]
   return `wa-bridge:${win.chatId}:${first.timestamp_ms}:${last.timestamp_ms}`
+}
+
+function linkedinSourceKey(win: LinkedinWindow): string {
+  const first = win.messages[0]
+  const last = win.messages[win.messages.length - 1]
+  return `linkedin:${win.conversationId}:${first.created_at_ms}:${last.created_at_ms}`
 }
 
 function compactName(value: unknown): string | null {
@@ -323,7 +406,19 @@ export class DailyInsightRunner {
 
     const end = Date.now()
     const start = end - STARTUP_LOOKBACK_MS
-    return this.runRange(start, end, reason)
+    const whatsapp = await this.runRange(start, end, reason)
+    const linkedin = await this.runLinkedinRange(start, end, reason)
+    return {
+      runId: linkedin.runId || whatsapp.runId,
+      messagesSeen: whatsapp.messagesSeen + linkedin.messagesSeen,
+      conversationsProcessed: whatsapp.conversationsProcessed + linkedin.conversationsProcessed,
+      outputsWritten: whatsapp.outputsWritten + linkedin.outputsWritten,
+      interactionsWritten: (whatsapp.interactionsWritten ?? 0) + (linkedin.interactionsWritten ?? 0),
+      contactFactsWritten: (whatsapp.contactFactsWritten ?? 0) + (linkedin.contactFactsWritten ?? 0),
+      valueLogsWritten: (whatsapp.valueLogsWritten ?? 0) + (linkedin.valueLogsWritten ?? 0),
+      todosWritten: (whatsapp.todosWritten ?? 0) + (linkedin.todosWritten ?? 0),
+      reviewItemsWritten: (whatsapp.reviewItemsWritten ?? 0) + (linkedin.reviewItemsWritten ?? 0),
+    }
   }
 
   async runChat(chatId: string): Promise<InsightRunResult> {
@@ -434,6 +529,143 @@ export class DailyInsightRunner {
   private async runRange(startMs: number, endMs: number, reason: string): Promise<InsightRunResult> {
     const messages = bridgeMessagesForRange(startMs, endMs)
     return this.runMessages(messages, reason)
+  }
+
+  private async runLinkedinRange(startMs: number, endMs: number, reason: string): Promise<InsightRunResult> {
+    const messages = linkedinMessagesForInsightRange(startMs, endMs)
+    if (messages.length === 0) {
+      return {
+        runId: 0,
+        messagesSeen: 0,
+        conversationsProcessed: 0,
+        outputsWritten: 0,
+        interactionsWritten: 0,
+        contactFactsWritten: 0,
+        valueLogsWritten: 0,
+        todosWritten: 0,
+        reviewItemsWritten: 0,
+      }
+    }
+    return this.runLinkedinMessages(messages, `linkedin:${reason}`)
+  }
+
+  private async runLinkedinMessages(
+    messages: LinkedinMessageRow[],
+    reason: string,
+  ): Promise<InsightRunResult> {
+    const dateCovered = messages[0] ? localDate(messages[0].created_at_ms) : localDate(Date.now())
+    const runId = createDailyAiRun({
+      scheduled_for: reason === 'manual' ? 'manual' : scheduledLabel(),
+      date_covered: dateCovered,
+    })
+    let conversationsProcessed = 0
+    let outputsWritten = 0
+    const counters = emptyCounters()
+    try {
+      const windows = groupLinkedinWindows(messages)
+      for (const win of windows) {
+        const contactId = this.options.resolveLinkedinContact
+          ? await this.options.resolveLinkedinContact({
+              conversationId: win.conversationId,
+              linkedinUrl: win.linkedinUrl,
+              name: win.title,
+            })
+          : null
+
+        if (!contactId) {
+          this.openLinkedinIdentityIssue(win)
+          continue
+        }
+
+        const key = linkedinSourceKey(win)
+        const previousOutput = getAiOutput(key)
+        if (previousOutput) {
+          markLinkedinMessagesSynced(win.messages.map((message) => message.id), contactId)
+          continue
+        }
+
+        const first = win.messages[0]
+        const last = win.messages[win.messages.length - 1]
+        const interactionDate = localDate(first.created_at_ms)
+        const extraction = await extractWhatsappInsights({
+          conversationText: linkedinConversationText(win.messages),
+          interactionDate,
+          contactName: win.title,
+          feedbackGuidance: aiFeedbackGuidance(),
+        })
+        const payload = {
+          contact_id: contactId,
+          type: 'linkedin_msg',
+          direction: dominantLinkedinDirection(win.messages),
+          notes: extraction.summary,
+          interaction_date: interactionDate,
+          next_step: extraction.next_step,
+          next_step_date: extraction.next_step_date,
+          next_step_owner: extraction.next_step_owner,
+          channel: 'linkedin',
+          window_start: new Date(first.created_at_ms).toISOString(),
+          window_end: new Date(last.created_at_ms).toISOString(),
+          message_count: win.messages.length,
+        }
+        const stagedId = stageAiOutput({
+          run_id: runId,
+          source_key: key,
+          target: 'interaction',
+          contact_id: contactId,
+          interaction_date: interactionDate,
+          title: win.title,
+          body: extraction.summary,
+          payload,
+        })
+        if (stagedId) {
+          outputsWritten++
+          counters.interactions_written++
+        }
+        recordAiRunOutput({
+          run_id: runId,
+          source_key: key,
+          target: 'interaction',
+          contact_id: contactId,
+          supabase_id: null,
+          label: extraction.summary.slice(0, 160),
+        })
+        recordAiOutput(key, 'interaction', null)
+        markLinkedinMessagesSynced(win.messages.map((message) => message.id), contactId)
+        conversationsProcessed++
+      }
+      finishDailyAiRun(runId, {
+        status: 'succeeded',
+        messages_seen: messages.length,
+        conversations_processed: conversationsProcessed,
+        outputs_written: outputsWritten,
+        ...counters,
+      })
+      this.options.publishStatus()
+      return {
+        runId,
+        messagesSeen: messages.length,
+        conversationsProcessed,
+        outputsWritten,
+        interactionsWritten: counters.interactions_written,
+        contactFactsWritten: counters.contact_facts_written,
+        valueLogsWritten: counters.value_logs_written,
+        todosWritten: counters.todos_written,
+        reviewItemsWritten: counters.review_items_written,
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      finishDailyAiRun(runId, {
+        status: 'failed',
+        messages_seen: messages.length,
+        conversations_processed: conversationsProcessed,
+        outputs_written: outputsWritten,
+        ...counters,
+        error: message,
+      })
+      this.openSyncError(`ai:${reason}`, 'LinkedIn insight failed', message)
+      this.options.publishStatus()
+      throw err
+    }
   }
 
   private async runMessages(
@@ -798,14 +1030,14 @@ export class DailyInsightRunner {
       if (error) throw new Error(error.message)
       supabaseId = data?.id ?? null
       if (supabaseId && windowStart && windowEnd) {
-        await supabase.from('extension_interaction_windows').insert({
-          user_id: user.id,
-          contact_id: payload.contact_id,
-          interaction_id: supabaseId,
-          channel: 'whatsapp',
-          window_start: windowStart,
-          window_end: windowEnd,
-          direction: payload.direction,
+          await supabase.from('extension_interaction_windows').insert({
+            user_id: user.id,
+            contact_id: payload.contact_id,
+            interaction_id: supabaseId,
+            channel: payload.channel ?? 'whatsapp',
+            window_start: windowStart,
+            window_end: windowEnd,
+            direction: payload.direction,
           message_count: messageCount,
         }).then(({ error }) => {
           if (error) console.warn('[daily-insights] approved window insert failed:', error.message)
@@ -887,7 +1119,7 @@ export class DailyInsightRunner {
           status: compactName(payload.introduction_status) ?? 'made',
           direction: payload.direction === 'received' ? 'received' : 'given',
           confidence: compactName(payload.confidence) ?? 'medium',
-          source_channel: 'whatsapp',
+          source_channel: compactName(payload.source_channel) ?? compactName(payload.channel) ?? 'whatsapp',
           source_interaction_date: payload.date,
           source_external_id: row.dedupe_key,
           source_value_log_id: supabaseId,
@@ -1043,6 +1275,40 @@ export class DailyInsightRunner {
       now,
       now,
     )
+  }
+
+  private openLinkedinIdentityIssue(win: LinkedinWindow): void {
+    const db = getDb()
+    const now = Date.now()
+    const issueKey = `linkedin-identity:${win.conversationId}`
+    const existing = db
+      .prepare('SELECT status FROM sync_issues WHERE issue_key = ?')
+      .get(issueKey) as { status: string } | undefined
+    if (existing?.status === 'dismissed') return
+    const first = win.messages[0]
+    const last = win.messages[win.messages.length - 1]
+    const range = first && last
+      ? `${formatIssueTimestamp(first.created_at_ms)} - ${formatIssueTimestamp(last.created_at_ms)}`
+      : 'No timestamp'
+    const samples = win.messages.slice(-4).map((message) => {
+      const speaker = message.is_from_me ? 'Me' : (message.sender_name || win.title)
+      const text = (message.body || '[media]').replace(/\s+/g, ' ').trim()
+      return `${formatIssueTimestamp(message.created_at_ms)} ${speaker}: ${text.slice(0, 180)}`
+    })
+    const detail = `${win.messages.length} LinkedIn message${win.messages.length === 1 ? '' : 's'} captured, ${range}. Link/create the contact once; Conversations will backfill local LinkedIn messages automatically.\nRecent context:\n${samples.join('\n')}`
+    db.prepare(`
+      INSERT INTO sync_issues
+        (issue_key, kind, severity, title, detail, chat_key, contact_id, status, created_at, updated_at)
+      VALUES
+        (?, 'identity_resolution', 'warning', ?, ?, ?, NULL, 'open', ?, ?)
+      ON CONFLICT(issue_key) DO UPDATE SET
+        title = excluded.title,
+        detail = excluded.detail,
+        chat_key = excluded.chat_key,
+        status = 'open',
+        updated_at = excluded.updated_at,
+        resolved_at = NULL
+    `).run(issueKey, win.title, detail, `linkedin:${win.conversationId}`, now, now)
   }
 
   private openSyncError(issueKey: string, title: string, detail: string): void {

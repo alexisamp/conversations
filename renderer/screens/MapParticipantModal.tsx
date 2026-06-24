@@ -74,7 +74,14 @@ export function MapParticipantModal({ participant, onClose, onDone }: Props) {
     setError(null)
 
     let result
-    if (participant.phone) {
+    if (participant.chatId?.startsWith('linkedin:')) {
+      result = await window.conv.identity.linkChatToContact({
+        chat_id: participant.chatId,
+        contact_id: contact.id,
+        wa_name: participant.waName,
+        phone: null,
+      })
+    } else if (participant.phone) {
       result = await window.conv.contact.attachPhone({
         contact_id: contact.id,
         phone: participant.phone,
@@ -101,7 +108,7 @@ export function MapParticipantModal({ participant, onClose, onDone }: Props) {
       return
     }
 
-    if (result.ok && participant.chatId) {
+    if (result.ok && participant.chatId && !participant.chatId.startsWith('linkedin:')) {
       result = await window.conv.identity.linkChatToContact({
         chat_id: participant.chatId,
         contact_id: contact.id,
@@ -168,7 +175,9 @@ export function MapParticipantModal({ participant, onClose, onDone }: Props) {
 
   const subtitle = participant.phone
     ? participant.phone
-    : 'Linked ID (WhatsApp group participant)'
+    : participant.chatId?.startsWith('linkedin:')
+      ? 'LinkedIn message thread'
+      : 'Linked ID (WhatsApp group participant)'
 
   return (
     <div className="modal-backdrop" onClick={onClose}>

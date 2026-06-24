@@ -843,6 +843,241 @@ body {
 .tl-in_person {
   background: var(--pastel);
 }
+
+/* ────────── LinkedIn messages inbox ────────── */
+.li-messages-shell {
+  height: 100vh;
+  display: grid;
+  grid-template-columns: minmax(280px, 36%) minmax(0, 1fr);
+  background: #f5f7f8;
+  color: #17212b;
+  overflow: hidden;
+}
+
+.li-inbox {
+  min-width: 0;
+  border-right: 1px solid #d9e0e5;
+  background: #ffffff;
+  display: flex;
+  flex-direction: column;
+}
+
+.li-inbox-header,
+.li-thread-header {
+  height: 58px;
+  padding: 0 16px;
+  border-bottom: 1px solid #e1e6ea;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-shrink: 0;
+}
+
+.li-inbox-header strong,
+.li-thread-header strong {
+  display: block;
+  font-size: 15px;
+}
+
+.li-inbox-header span,
+.li-thread-header span {
+  display: block;
+  margin-top: 2px;
+  font-size: 12px;
+  color: #66727d;
+}
+
+.li-inbox-header button {
+  border: 1px solid #c9d3db;
+  background: #f8fafb;
+  color: #1e5f91;
+  border-radius: 7px;
+  height: 30px;
+  padding: 0 12px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.li-inbox-header button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.li-inbox-warning,
+.li-inbox-error,
+.li-empty-list {
+  margin: 12px;
+  padding: 10px 12px;
+  border-radius: 7px;
+  background: #fff7df;
+  color: #72510f;
+  font-size: 12px;
+}
+
+.li-inbox-error {
+  background: #fff0f0;
+  color: #8c2d2d;
+}
+
+.li-empty-list {
+  background: transparent;
+  color: #66727d;
+}
+
+.li-conversation-list {
+  overflow: auto;
+  min-height: 0;
+}
+
+.li-conversation-row {
+  width: 100%;
+  min-height: 70px;
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr) 8px;
+  align-items: center;
+  gap: 10px;
+  border: 0;
+  border-bottom: 1px solid #eef1f3;
+  background: transparent;
+  padding: 10px 12px;
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
+
+.li-conversation-row:hover,
+.li-conversation-row.selected {
+  background: #eef6fb;
+}
+
+.li-avatar {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  overflow: hidden;
+  background: #dce7ef;
+  color: #1e5f91;
+  display: grid;
+  place-items: center;
+  font-weight: 750;
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+.li-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.li-row-main,
+.li-row-top,
+.li-row-preview {
+  min-width: 0;
+}
+
+.li-row-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.li-row-top strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+}
+
+.li-row-top time {
+  margin-left: auto;
+  color: #7d8993;
+  font-size: 11px;
+  flex-shrink: 0;
+}
+
+.li-row-preview {
+  display: block;
+  margin-top: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #66727d;
+  font-size: 12px;
+}
+
+.li-unread-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #0a66c2;
+}
+
+.li-thread {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  background: #f7f9fb;
+}
+
+.li-thread-empty {
+  margin: auto;
+  color: #66727d;
+  font-size: 13px;
+}
+
+.li-message-list {
+  min-height: 0;
+  overflow: auto;
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.li-message {
+  max-width: min(680px, 76%);
+}
+
+.li-message.mine {
+  align-self: flex-end;
+}
+
+.li-message.theirs {
+  align-self: flex-start;
+}
+
+.li-message-meta {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin: 0 4px 4px;
+  color: #7d8993;
+  font-size: 11px;
+}
+
+.li-message.mine .li-message-meta {
+  justify-content: flex-end;
+}
+
+.li-message-bubble {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  border: 1px solid #dfe6eb;
+  background: #ffffff;
+  border-radius: 8px;
+  padding: 9px 11px;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.li-message.mine .li-message-bubble {
+  background: #e6f2fb;
+  border-color: #c8dfef;
+}
 .tl-content {
   flex: 1;
   min-width: 0;

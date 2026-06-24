@@ -54,6 +54,67 @@ CREATE INDEX IF NOT EXISTS idx_bridge_messages_unprocessed
   ON bridge_messages(ai_processed_at, timestamp_ms)
   WHERE ai_processed_at IS NULL;
 
+-- LinkedIn messaging cache. This is local-only raw message data, parallel to
+-- bridge_messages, and can be reviewed/summarized before anything writes to
+-- reThink.
+CREATE TABLE IF NOT EXISTS linkedin_profiles (
+  urn             TEXT PRIMARY KEY,
+  public_id       TEXT,
+  first_name      TEXT,
+  last_name       TEXT,
+  full_name       TEXT NOT NULL,
+  occupation      TEXT,
+  location        TEXT,
+  picture_url     TEXT,
+  linkedin_url    TEXT,
+  updated_at      INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
+);
+
+CREATE TABLE IF NOT EXISTS linkedin_conversations (
+  id                    TEXT PRIMARY KEY,
+  participant_urns      TEXT NOT NULL,
+  participant_names     TEXT NOT NULL,
+  participant_pictures  TEXT NOT NULL,
+  last_message          TEXT,
+  last_activity_at      INTEGER NOT NULL DEFAULT 0,
+  read                  INTEGER NOT NULL DEFAULT 1,
+  archived              INTEGER NOT NULL DEFAULT 0,
+  category              TEXT,
+  starred               INTEGER NOT NULL DEFAULT 0,
+  selected_contact_id   TEXT,
+  updated_at            INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
+);
+CREATE INDEX IF NOT EXISTS idx_linkedin_conversations_activity
+  ON linkedin_conversations(last_activity_at DESC);
+CREATE INDEX IF NOT EXISTS idx_linkedin_conversations_category
+  ON linkedin_conversations(category, last_activity_at DESC);
+
+CREATE TABLE IF NOT EXISTS linkedin_messages (
+  id                TEXT PRIMARY KEY,
+  conversation_id   TEXT NOT NULL REFERENCES linkedin_conversations(id) ON DELETE CASCADE,
+  sender_urn        TEXT,
+  sender_name       TEXT,
+  sender_picture    TEXT,
+  body              TEXT,
+  created_at_ms     INTEGER NOT NULL,
+  is_from_me        INTEGER NOT NULL DEFAULT 0,
+  attachments_json  TEXT,
+  synced_at         INTEGER,
+  contact_id        TEXT,
+  updated_at        INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
+);
+CREATE INDEX IF NOT EXISTS idx_linkedin_messages_conversation_ts
+  ON linkedin_messages(conversation_id, created_at_ms);
+CREATE INDEX IF NOT EXISTS idx_linkedin_messages_unsynced
+  ON linkedin_messages(synced_at, created_at_ms)
+  WHERE synced_at IS NULL;
+
+CREATE TABLE IF NOT EXISTS linkedin_sync_state (
+  key          TEXT PRIMARY KEY,
+  value        TEXT NOT NULL,
+  updated_at   INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
+);
+
 CREATE TABLE IF NOT EXISTS daily_ai_runs (
   id                       INTEGER PRIMARY KEY AUTOINCREMENT,
   run_at                   INTEGER NOT NULL,

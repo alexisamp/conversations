@@ -241,6 +241,47 @@ export type AiStagedOutput = {
   confirmed_at: number | null
 }
 
+export type LinkedinConversation = {
+  id: string
+  participant_urns: string
+  participant_names: string
+  participant_pictures: string
+  last_message: string | null
+  last_activity_at: number
+  read: number
+  archived: number
+  category: string | null
+  starred: number
+  selected_contact_id: string | null
+  updated_at: number
+}
+
+export type LinkedinMessage = {
+  id: string
+  conversation_id: string
+  sender_urn: string | null
+  sender_name: string | null
+  sender_picture: string | null
+  body: string | null
+  created_at_ms: number
+  is_from_me: number
+  attachments_json: string | null
+  synced_at: number | null
+  contact_id: string | null
+  updated_at: number
+}
+
+export type LinkedinInbox = {
+  authenticated: boolean
+  conversations: LinkedinConversation[]
+  error?: string
+}
+
+export type LinkedinThread = {
+  conversation: LinkedinConversation | null
+  messages: LinkedinMessage[]
+}
+
 export type SyncStatus = {
   state: SyncState
   label: string
@@ -373,6 +414,13 @@ export type ConvApi = {
   }
   li: {
     navigate(url: string): Promise<{ ok: boolean; error?: string }>
+  }
+  linkedin: {
+    syncInbox(): Promise<{ conversations: number; messages: number }>
+    getInbox(): Promise<LinkedinInbox>
+    getThread(conversationId: string): Promise<LinkedinThread>
+    selectConversation(conversationId: string): Promise<{ ok: true }>
+    onUpdated(cb: () => void): () => void
   }
   updater: {
     getStatus(): Promise<UpdaterStatus>

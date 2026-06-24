@@ -49,6 +49,77 @@ export type BridgeMessageRow = BridgeMessageInput & {
   contact_id: string | null
 }
 
+export type LinkedinProfileInput = {
+  urn: string
+  public_id: string | null
+  first_name: string | null
+  last_name: string | null
+  full_name: string
+  occupation: string | null
+  location: string | null
+  picture_url: string | null
+  linkedin_url: string | null
+}
+
+export type LinkedinConversationInput = {
+  id: string
+  participant_urns: string[]
+  participant_names: string[]
+  participant_pictures: string[]
+  last_message: string | null
+  last_activity_at: number
+  read: number
+  archived: number
+  category: string | null
+  starred: number
+}
+
+export type LinkedinMessageInput = {
+  id: string
+  conversation_id: string
+  sender_urn: string | null
+  sender_name: string | null
+  sender_picture: string | null
+  body: string | null
+  created_at_ms: number
+  is_from_me: number
+  attachments_json?: string | null
+}
+
+export type LinkedinConversationRow = {
+  id: string
+  participant_urns: string
+  participant_names: string
+  participant_pictures: string
+  last_message: string | null
+  last_activity_at: number
+  read: number
+  archived: number
+  category: string | null
+  starred: number
+  selected_contact_id: string | null
+  updated_at: number
+}
+
+export type LinkedinMessageRow = {
+  id: string
+  conversation_id: string
+  sender_urn: string | null
+  sender_name: string | null
+  sender_picture: string | null
+  body: string | null
+  created_at_ms: number
+  is_from_me: number
+  attachments_json: string | null
+  synced_at: number | null
+  contact_id: string | null
+  updated_at: number
+}
+
+export type LinkedinProfileRow = LinkedinProfileInput & {
+  updated_at: number
+}
+
 export type SessionRow = {
   id: number
   chat_phone: string
@@ -177,6 +248,62 @@ function migrateLocalSchema(handle: Database.Database): void {
     )
   `).run()
   handle.prepare('CREATE INDEX IF NOT EXISTS idx_ai_feedback_created ON ai_feedback(created_at DESC)').run()
+  handle.exec(`
+    CREATE TABLE IF NOT EXISTS linkedin_profiles (
+      urn             TEXT PRIMARY KEY,
+      public_id       TEXT,
+      first_name      TEXT,
+      last_name       TEXT,
+      full_name       TEXT NOT NULL,
+      occupation      TEXT,
+      location        TEXT,
+      picture_url     TEXT,
+      linkedin_url    TEXT,
+      updated_at      INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
+    );
+    CREATE TABLE IF NOT EXISTS linkedin_conversations (
+      id                    TEXT PRIMARY KEY,
+      participant_urns      TEXT NOT NULL,
+      participant_names     TEXT NOT NULL,
+      participant_pictures  TEXT NOT NULL,
+      last_message          TEXT,
+      last_activity_at      INTEGER NOT NULL DEFAULT 0,
+      read                  INTEGER NOT NULL DEFAULT 1,
+      archived              INTEGER NOT NULL DEFAULT 0,
+      category              TEXT,
+      starred               INTEGER NOT NULL DEFAULT 0,
+      selected_contact_id   TEXT,
+      updated_at            INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
+    );
+    CREATE INDEX IF NOT EXISTS idx_linkedin_conversations_activity
+      ON linkedin_conversations(last_activity_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_linkedin_conversations_category
+      ON linkedin_conversations(category, last_activity_at DESC);
+    CREATE TABLE IF NOT EXISTS linkedin_messages (
+      id                TEXT PRIMARY KEY,
+      conversation_id   TEXT NOT NULL REFERENCES linkedin_conversations(id) ON DELETE CASCADE,
+      sender_urn        TEXT,
+      sender_name       TEXT,
+      sender_picture    TEXT,
+      body              TEXT,
+      created_at_ms     INTEGER NOT NULL,
+      is_from_me        INTEGER NOT NULL DEFAULT 0,
+      attachments_json  TEXT,
+      synced_at         INTEGER,
+      contact_id        TEXT,
+      updated_at        INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
+    );
+    CREATE INDEX IF NOT EXISTS idx_linkedin_messages_conversation_ts
+      ON linkedin_messages(conversation_id, created_at_ms);
+    CREATE INDEX IF NOT EXISTS idx_linkedin_messages_unsynced
+      ON linkedin_messages(synced_at, created_at_ms)
+      WHERE synced_at IS NULL;
+    CREATE TABLE IF NOT EXISTS linkedin_sync_state (
+      key          TEXT PRIMARY KEY,
+      value        TEXT NOT NULL,
+      updated_at   INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
+    );
+  `)
 }
 
 // ─── Messages ────────────────────────────────────────────────────────
@@ -324,6 +451,178 @@ export function pruneSyncedBridgeMessages(retentionDays = 30): number {
     .prepare('DELETE FROM bridge_messages WHERE synced_at IS NOT NULL AND timestamp_ms < ?')
     .run(cutoff)
   return result.changes
+}
+
+// ─── LinkedIn messages ──────────────────────────────────────────────────
+
+export function upsertLinkedinProfiles(inputs: LinkedinProfileInput[]): number {
+  if (inputs.length === 0) return 0
+  const stmt = getDb().prepare(`
+    INSERT INTO linkedin_profiles
+      (urn, public_id, first_name, last_name, full_name, occupation, location, picture_url, linkedin_url, updated_at)
+    VALUES
+      (@urn, @public_id, @first_name, @last_name, @full_name, @occupation, @location, @picture_url, @linkedin_url, @now)
+    ON CONFLICT(urn) DO UPDATE SET
+      public_id = COALESCE(excluded.public_id, linkedin_profiles.public_id),
+      first_name = COALESCE(excluded.first_name, linkedin_profiles.first_name),
+      last_name = COALESCE(excluded.last_name, linkedin_profiles.last_name),
+      full_name = CASE WHEN excluded.full_name = '' THEN linkedin_profiles.full_name ELSE excluded.full_name END,
+      occupation = COALESCE(excluded.occupation, linkedin_profiles.occupation),
+      location = COALESCE(excluded.location, linkedin_profiles.location),
+      picture_url = COALESCE(excluded.picture_url, linkedin_profiles.picture_url),
+      linkedin_url = COALESCE(excluded.linkedin_url, linkedin_profiles.linkedin_url),
+      updated_at = excluded.updated_at
+  `)
+  const tx = getDb().transaction((rows: LinkedinProfileInput[]) => {
+    let changed = 0
+    const now = Date.now()
+    for (const row of rows) changed += stmt.run({ ...row, now }).changes
+    return changed
+  })
+  return tx(inputs) as number
+}
+
+export function upsertLinkedinConversations(inputs: LinkedinConversationInput[]): number {
+  if (inputs.length === 0) return 0
+  const stmt = getDb().prepare(`
+    INSERT INTO linkedin_conversations
+      (id, participant_urns, participant_names, participant_pictures, last_message, last_activity_at, read, archived, category, starred, updated_at)
+    VALUES
+      (@id, @participant_urns, @participant_names, @participant_pictures, @last_message, @last_activity_at, @read, @archived, @category, @starred, @now)
+    ON CONFLICT(id) DO UPDATE SET
+      participant_urns = excluded.participant_urns,
+      participant_names = excluded.participant_names,
+      participant_pictures = excluded.participant_pictures,
+      last_message = excluded.last_message,
+      last_activity_at = excluded.last_activity_at,
+      read = excluded.read,
+      archived = excluded.archived,
+      category = excluded.category,
+      starred = excluded.starred,
+      updated_at = excluded.updated_at
+  `)
+  const tx = getDb().transaction((rows: LinkedinConversationInput[]) => {
+    let changed = 0
+    const now = Date.now()
+    for (const row of rows) {
+      changed += stmt.run({
+        ...row,
+        participant_urns: JSON.stringify(row.participant_urns),
+        participant_names: JSON.stringify(row.participant_names),
+        participant_pictures: JSON.stringify(row.participant_pictures),
+        now,
+      }).changes
+    }
+    return changed
+  })
+  return tx(inputs) as number
+}
+
+export function upsertLinkedinMessages(inputs: LinkedinMessageInput[]): number {
+  if (inputs.length === 0) return 0
+  const stmt = getDb().prepare(`
+    INSERT INTO linkedin_messages
+      (id, conversation_id, sender_urn, sender_name, sender_picture, body, created_at_ms, is_from_me, attachments_json, updated_at)
+    VALUES
+      (@id, @conversation_id, @sender_urn, @sender_name, @sender_picture, @body, @created_at_ms, @is_from_me, @attachments_json, @now)
+    ON CONFLICT(id) DO UPDATE SET
+      conversation_id = excluded.conversation_id,
+      sender_urn = excluded.sender_urn,
+      sender_name = excluded.sender_name,
+      sender_picture = excluded.sender_picture,
+      body = excluded.body,
+      created_at_ms = excluded.created_at_ms,
+      is_from_me = excluded.is_from_me,
+      attachments_json = excluded.attachments_json,
+      updated_at = excluded.updated_at
+  `)
+  const tx = getDb().transaction((rows: LinkedinMessageInput[]) => {
+    let changed = 0
+    const now = Date.now()
+    for (const row of rows) changed += stmt.run({ ...row, attachments_json: row.attachments_json ?? null, now }).changes
+    return changed
+  })
+  return tx(inputs) as number
+}
+
+export function listLinkedinConversations(limit = 100): LinkedinConversationRow[] {
+  return getDb()
+    .prepare('SELECT * FROM linkedin_conversations ORDER BY last_activity_at DESC LIMIT ?')
+    .all(limit) as LinkedinConversationRow[]
+}
+
+export function linkedinConversation(id: string): LinkedinConversationRow | null {
+  const row = getDb()
+    .prepare('SELECT * FROM linkedin_conversations WHERE id = ?')
+    .get(id) as LinkedinConversationRow | undefined
+  return row ?? null
+}
+
+export function linkedinMessagesForConversation(conversationId: string, limit = 200): LinkedinMessageRow[] {
+  return getDb()
+    .prepare(`
+      SELECT * FROM linkedin_messages
+      WHERE conversation_id = ?
+      ORDER BY created_at_ms ASC
+      LIMIT ?
+    `)
+    .all(conversationId, limit) as LinkedinMessageRow[]
+}
+
+export function linkedinProfileByUrn(urn: string): LinkedinProfileRow | null {
+  const row = getDb()
+    .prepare('SELECT * FROM linkedin_profiles WHERE urn = ?')
+    .get(urn) as LinkedinProfileRow | undefined
+  return row ?? null
+}
+
+export function updateLinkedinConversationContact(conversationId: string, contactId: string | null): void {
+  getDb()
+    .prepare('UPDATE linkedin_conversations SET selected_contact_id = ?, updated_at = ? WHERE id = ?')
+    .run(contactId, Date.now(), conversationId)
+}
+
+export function linkedinMessagesForInsightRange(startMs: number, endMs: number): LinkedinMessageRow[] {
+  return getDb()
+    .prepare(`
+      SELECT m.*
+      FROM linkedin_messages m
+      JOIN linkedin_conversations c ON c.id = m.conversation_id
+      WHERE m.created_at_ms >= ?
+        AND m.created_at_ms <= ?
+        AND m.synced_at IS NULL
+      ORDER BY m.conversation_id ASC, m.created_at_ms ASC
+    `)
+    .all(startMs, endMs) as LinkedinMessageRow[]
+}
+
+export function markLinkedinMessagesSynced(messageIds: string[], contactId: string): void {
+  if (messageIds.length === 0) return
+  const placeholders = messageIds.map(() => '?').join(',')
+  getDb()
+    .prepare(`
+      UPDATE linkedin_messages
+      SET synced_at = ?, contact_id = ?
+      WHERE id IN (${placeholders})
+    `)
+    .run(Date.now(), contactId, ...messageIds)
+}
+
+export function linkedinSyncState(key: string): string | null {
+  const row = getDb()
+    .prepare('SELECT value FROM linkedin_sync_state WHERE key = ?')
+    .get(key) as { value: string } | undefined
+  return row?.value ?? null
+}
+
+export function setLinkedinSyncState(key: string, value: string): void {
+  getDb()
+    .prepare(`
+      INSERT INTO linkedin_sync_state (key, value, updated_at)
+      VALUES (?, ?, ?)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+    `)
+    .run(key, value, Date.now())
 }
 
 // ─── Daily AI runs + output dedupe ───────────────────────────────────

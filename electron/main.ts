@@ -22,7 +22,14 @@ import { loadEnvFile } from './supabase/env'
 import { registerAuthIpc } from './supabase/auth'
 import { registerContactIpc, setLinkedinWebContentsForScrape } from './supabase/contacts'
 import { applyLayout, SIDEBAR_WIDTH, TAB_BAR_HEIGHT } from './layout'
-import { countPendingAiStagedOutputs, getDb, insertMessage, assignMessageToSession, type MessageInput } from './db/local'
+import {
+  countPendingAiStagedOutputs,
+  getDb,
+  insertMessage,
+  assignMessageToSession,
+  linkedinProfileByUrn,
+  type MessageInput,
+} from './db/local'
 import { handleMessage, recoverOpenSessions } from './session-manager'
 import { startSync, stopSync } from './sync/supabase-sync'
 import { createSyncCoordinator, type SyncStatus } from './sync/sync-coordinator'
@@ -32,6 +39,12 @@ import { getSupabase } from './supabase/client'
 import { summarizeSession } from './ai/gemini'
 import { phoneVariants } from './utils/phone'
 import { autoUpdater } from 'electron-updater'
+import {
+  linkedinInbox,
+  linkedinThread,
+  syncLinkedinConversation,
+  syncLinkedinInbox,
+} from './linkedin/sync'
 
 // Cache phone → contactId so we don't re-resolve on every message.
 // Populated lazily when a message arrives for a new phone.
@@ -57,6 +70,7 @@ let mainWindow: BaseWindow | null = null
 let tabBarView: WebContentsView | null = null
 let whatsappView: WebContentsView | null = null
 let linkedinView: WebContentsView | null = null
+let linkedinMessagesView: WebContentsView | null = null
 
 /** Accessor for other modules that need the authenticated LI WebContents
  *  (e.g. scrape-company.ts navigates it to /company/<slug>/about/ to pull
@@ -483,7 +497,6 @@ async function createMainWindow(): Promise<void> {
     whatsappView?.webContents.setZoomFactor(0.8)
     injectBannerHider(whatsappView!)
     syncCoordinator?.scheduleActiveChat('whatsapp load')
-    syncCoordinator?.scheduleStartupCatchUp()
   })
 
   // ── LinkedIn view ──
@@ -514,6 +527,17 @@ async function createMainWindow(): Promise<void> {
     }
     handleExternalLink(url)
     return { action: 'deny' }
+  })
+
+  // ── LinkedIn messages renderer view ──
+  linkedinMessagesView = new WebContentsView({
+    webPreferences: {
+      preload: path.join(__dirname, 'preload-sidebar.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false,
+      partition: 'persist:sidebar',
+    },
   })
 
   // ── Sidebar view ──
@@ -575,6 +599,7 @@ async function createMainWindow(): Promise<void> {
   insightRunner = new DailyInsightRunner({
     bridge: whatsappBridge,
     resolveContact: resolveBridgeChatContact,
+    resolveLinkedinContact,
     publishStatus: publishSyncStatus,
   })
   void whatsappBridge.ensureStarted().finally(() => publishSyncStatus())
@@ -590,6 +615,7 @@ async function createMainWindow(): Promise<void> {
   // Z-order: first added = back. Tab bar + overlay are topmost.
   mainWindow.contentView.addChildView(whatsappView)
   mainWindow.contentView.addChildView(linkedinView)
+  mainWindow.contentView.addChildView(linkedinMessagesView)
   mainWindow.contentView.addChildView(sidebarView)
   mainWindow.contentView.addChildView(tabBarView)
   mainWindow.contentView.addChildView(searchOverlayView)
@@ -603,8 +629,12 @@ async function createMainWindow(): Promise<void> {
   // ── Load content ──
   if (IS_DEV) {
     await sidebarView.webContents.loadURL(SIDEBAR_DEV_URL)
+    await linkedinMessagesView.webContents.loadURL(`${SIDEBAR_DEV_URL}?mode=linkedin-messages`)
   } else {
     await sidebarView.webContents.loadFile(SIDEBAR_PROD_FILE)
+    await linkedinMessagesView.webContents.loadFile(SIDEBAR_PROD_FILE, {
+      query: { mode: 'linkedin-messages' },
+    })
   }
 
   void whatsappView.webContents.loadURL(WHATSAPP_URL).catch((err) => {
@@ -626,6 +656,7 @@ async function createMainWindow(): Promise<void> {
     tabBarView = null
     whatsappView = null
     linkedinView = null
+    linkedinMessagesView = null
     sidebarView = null
     searchOverlayView = null
     syncCoordinator = null
@@ -669,7 +700,7 @@ function toggleSearchOverlay(): void {
 
 function activeContentView(): WebContentsView | null {
   if (activeTab === 'wa') return whatsappView
-  if (activeTab === 'li') return linkedinView
+  if (activeTab === 'li') return linkedinMessagesView
   return sidebarView
 }
 
@@ -688,7 +719,7 @@ function cropWhatsAppLeftRail(): void {
 }
 
 function refreshLayout(): void {
-  if (!mainWindow || !tabBarView || !whatsappView || !linkedinView || !sidebarView) return
+  if (!mainWindow || !tabBarView || !whatsappView || !linkedinView || !linkedinMessagesView || !sidebarView) return
   if (activeTab === 'ai') {
     const { width, height } = mainWindow.getContentBounds()
     const belowTabs = Math.max(0, height - TAB_BAR_HEIGHT)
@@ -698,12 +729,16 @@ function refreshLayout(): void {
     whatsappView.setVisible(false)
     linkedinView.setBounds({ x: 0, y: 0, width: 0, height: 0 })
     linkedinView.setVisible(false)
+    linkedinMessagesView.setBounds({ x: 0, y: 0, width: 0, height: 0 })
+    linkedinMessagesView.setVisible(false)
     sidebarView.setBounds({ x: 0, y: TAB_BAR_HEIGHT, width, height: belowTabs })
     sidebarView.setVisible(true)
     return
   }
-  const active = activeTab === 'wa' ? whatsappView : linkedinView
-  const inactive = activeTab === 'wa' ? [linkedinView] : [whatsappView]
+  const active = activeTab === 'wa' ? whatsappView : linkedinMessagesView
+  const inactive = activeTab === 'wa' ? [linkedinMessagesView] : [whatsappView]
+  linkedinView.setBounds({ x: 0, y: 0, width: 0, height: 0 })
+  linkedinView.setVisible(false)
   applyLayout({
     win: mainWindow,
     tabBarView,
@@ -848,6 +883,64 @@ async function resolveBridgeChatContact(input: {
   return null
 }
 
+async function resolveLinkedinContact(input: {
+  conversationId: string
+  linkedinUrl: string | null
+  name: string | null
+}): Promise<string | null> {
+  const supabase = getSupabase()
+  if (input.linkedinUrl) {
+    const { linkedinSlug, linkedinUrlVariants } = await import('./utils/linkedin')
+    const variants = linkedinUrlVariants(input.linkedinUrl)
+    const slug = linkedinSlug(input.linkedinUrl)
+    const { data: channel } = await supabase
+      .from('contact_channels')
+      .select('outreach_log_id')
+      .eq('channel', 'linkedin')
+      .in('channel_identifier', variants)
+      .limit(1)
+      .maybeSingle()
+    if (channel) return channel.outreach_log_id as string
+
+    const { data: contact } = await supabase
+      .from('outreach_logs')
+      .select('id')
+      .in('linkedin_url', variants)
+      .limit(1)
+      .maybeSingle()
+    if (contact) return contact.id as string
+
+    if (slug) {
+      const pattern = `%/in/${slug}%`
+      const { data: fuzzyChannel } = await supabase
+        .from('contact_channels')
+        .select('outreach_log_id')
+        .eq('channel', 'linkedin')
+        .ilike('channel_identifier', pattern)
+        .limit(1)
+        .maybeSingle()
+      if (fuzzyChannel) return fuzzyChannel.outreach_log_id as string
+
+      const { data: fuzzyContact } = await supabase
+        .from('outreach_logs')
+        .select('id')
+        .ilike('linkedin_url', pattern)
+        .limit(1)
+        .maybeSingle()
+      if (fuzzyContact) return fuzzyContact.id as string
+    }
+  }
+  if (input.name && input.name.trim().length >= 2) {
+    const { data } = await supabase
+      .from('outreach_logs')
+      .select('id')
+      .ilike('name', input.name.trim())
+      .limit(2)
+    if (data?.length === 1) return (data[0] as { id: string }).id
+  }
+  return null
+}
+
 function whatsappBridgeIdentifiers(input: {
   chat_id: string
   phone: string | null
@@ -868,6 +961,16 @@ function whatsappBridgeIdentifiers(input: {
   }
   if (input.wa_name?.trim()) identifiers.add(`waname:${input.wa_name.trim()}`)
   return [...identifiers].filter(Boolean)
+}
+
+function parseJsonArray(value: string | null | undefined): string[] {
+  if (!value) return []
+  try {
+    const parsed = JSON.parse(value)
+    return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === 'string') : []
+  } catch {
+    return []
+  }
 }
 
 async function linkBridgeChatToContact(input: {
@@ -954,6 +1057,87 @@ async function linkBridgeChatToContact(input: {
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) }
   }
+}
+
+async function linkLinkedinConversationToContact(input: {
+  conversation_id: string
+  contact_id: string
+}): Promise<{ ok: true } | { ok: false; error: string }> {
+  try {
+    const supabase = getSupabase()
+    const conversation = linkedinThread(input.conversation_id).conversation
+    const urn = parseJsonArray(conversation?.participant_urns)[0] ?? null
+    const profile = urn ? linkedinProfileByUrn(urn) : null
+    const linkedinUrl = profile?.linkedin_url || (profile?.public_id ? `https://www.linkedin.com/in/${profile.public_id}` : null)
+
+    if (linkedinUrl) {
+      const { linkedinUrlVariants } = await import('./utils/linkedin')
+      const identifiers = linkedinUrlVariants(linkedinUrl)
+      const { data: existingRows, error: lookupError } = await supabase
+        .from('contact_channels')
+        .select('outreach_log_id, channel_identifier')
+        .eq('channel', 'linkedin')
+        .in('channel_identifier', identifiers)
+      if (lookupError) return { ok: false, error: lookupError.message }
+      const existing = (existingRows ?? []) as Array<{ outreach_log_id: string; channel_identifier: string }>
+      if (existing.some((row) => row.outreach_log_id !== input.contact_id)) {
+        return { ok: false, error: 'This LinkedIn profile is already linked to another contact.' }
+      }
+      const existingIdentifiers = new Set(existing.map((row) => row.channel_identifier))
+      const missing = identifiers.filter((identifier) => !existingIdentifiers.has(identifier))
+      if (missing.length > 0) {
+        const { error } = await supabase.from('contact_channels').insert(missing.map((identifier) => ({
+          outreach_log_id: input.contact_id,
+          channel: 'linkedin',
+          channel_identifier: identifier,
+          channel_name: profile?.full_name ?? null,
+          verified: true,
+        })))
+        if (error && error.code !== '23505') return { ok: false, error: error.message }
+      }
+      await supabase
+        .from('outreach_logs')
+        .update({ linkedin_url: linkedinUrl, updated_at: new Date().toISOString() })
+        .eq('id', input.contact_id)
+        .is('linkedin_url', null)
+    }
+
+    const now = Date.now()
+    getDb().prepare(`
+      UPDATE linkedin_conversations
+      SET selected_contact_id = ?, updated_at = ?
+      WHERE id = ?
+    `).run(input.contact_id, now, input.conversation_id)
+    getDb().prepare(`
+      UPDATE linkedin_messages
+      SET contact_id = ?
+      WHERE conversation_id = ?
+    `).run(input.contact_id, input.conversation_id)
+    getDb().prepare(`
+      UPDATE sync_issues
+      SET status = 'resolved', contact_id = ?, resolved_at = ?, updated_at = ?
+      WHERE issue_key = ? OR chat_key = ?
+    `).run(input.contact_id, now, now, `linkedin-identity:${input.conversation_id}`, `linkedin:${input.conversation_id}`)
+    publishSyncStatus()
+    return { ok: true }
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) }
+  }
+}
+
+async function linkChatToContact(input: {
+  chat_id: string
+  contact_id: string
+  wa_name: string | null
+  phone: string | null
+}): Promise<{ ok: true } | { ok: false; error: string }> {
+  if (input.chat_id.startsWith('linkedin:')) {
+    return linkLinkedinConversationToContact({
+      conversation_id: input.chat_id.replace(/^linkedin:/, ''),
+      contact_id: input.contact_id,
+    })
+  }
+  return linkBridgeChatToContact(input)
 }
 
 function attachDiagnosticListeners(view: WebContentsView, label: 'wa' | 'li'): void {
@@ -1159,8 +1343,11 @@ function buildMenu(): void {
           label: 'Home',
           accelerator: 'CmdOrCtrl+Shift+H',
           click: () => {
-            const url = activeTab === 'wa' ? WHATSAPP_URL : LINKEDIN_URL
-            activeContentView()?.webContents.loadURL(url).catch(() => {})
+            if (activeTab === 'wa') {
+              activeContentView()?.webContents.loadURL(WHATSAPP_URL).catch(() => {})
+            } else if (activeTab === 'li') {
+              linkedinMessagesView?.webContents.reload()
+            }
           },
         },
         { type: 'separator' },
@@ -1902,6 +2089,17 @@ function registerIpc(): void {
   })
   ipcMain.handle('sync:run-recent-catchup', async (_event, limit?: number) => {
     if (!syncCoordinator) throw new Error('Sync coordinator not ready')
+    const bridgeStatus = await whatsappBridge.getStatus()
+    if (bridgeStatus.state === 'connected') {
+      const imported = whatsappBridge.importRecentMessages()
+      const insight = await insightRunner?.runNow('manual bridge catch-up')
+      publishSyncStatus()
+      return {
+        chatsScanned: insight?.conversationsProcessed ?? 0,
+        uploadedCount: insight?.outputsWritten ?? imported.imported,
+        unmatchedCount: 0,
+      }
+    }
     return syncCoordinator.runRecentCatchUp(limit)
   })
   ipcMain.handle('sync:dismiss-issue', (_event, issueKey: string) => {
@@ -1960,7 +2158,7 @@ function registerIpc(): void {
     contact_id: string
     wa_name: string | null
     phone: string | null
-  }) => linkBridgeChatToContact(input))
+  }) => linkChatToContact(input))
 
   // Updater IPCs — explicit 3-step flow:
   //   check → (if available) download → (when downloaded) restart-install
@@ -2088,8 +2286,8 @@ function registerIpc(): void {
   })
   ipcMain.on('tab:home', () => {
     if (activeTab === 'ai') return
-    const url = activeTab === 'wa' ? WHATSAPP_URL : LINKEDIN_URL
-    activeContentView()?.webContents.loadURL(url).catch(() => {})
+    if (activeTab === 'wa') activeContentView()?.webContents.loadURL(WHATSAPP_URL).catch(() => {})
+    else if (activeTab === 'li') linkedinMessagesView?.webContents.reload()
   })
   ipcMain.on('tab:search', () => {
     showSearchOverlay()
@@ -2124,51 +2322,57 @@ function registerIpc(): void {
         )
 
         // Resolve phone → contactId (cached after first lookup per phone).
+        const hasPhoneKey = /^\+?\d{7,16}$/.test(payload.chat_phone)
         let contactId = phoneContactIdCache.get(payload.chat_phone)
         if (contactId === undefined) {
           // First message for this phone in this app session → resolve async.
           try {
-            const supabase = getSupabase()
-            const variants = phoneVariants(payload.chat_phone)
+            if (!hasPhoneKey) {
+              phoneContactIdCache.set(payload.chat_phone, null)
+              contactId = null
+            } else {
+              const supabase = getSupabase()
+              const variants = phoneVariants(payload.chat_phone)
 
-            // Try contact_channels first (same logic as resolveContactIdByPhone)
-            let resolved: string | null = null
-            const { data: ch } = await supabase
-              .from('contact_channels')
-              .select('outreach_log_id')
-              .eq('channel', 'whatsapp')
-              .in('channel_identifier', variants)
-              .limit(1)
-              .maybeSingle()
-            if (ch) resolved = ch.outreach_log_id as string
-
-            if (!resolved) {
-              const { data: mp } = await supabase
-                .from('contact_phone_mappings')
-                .select('contact_id')
-                .in('phone_number', variants)
+              // Try contact_channels first (same logic as resolveContactIdByPhone)
+              let resolved: string | null = null
+              const { data: ch } = await supabase
+                .from('contact_channels')
+                .select('outreach_log_id')
+                .eq('channel', 'whatsapp')
+                .in('channel_identifier', variants)
                 .limit(1)
                 .maybeSingle()
-              if (mp) resolved = mp.contact_id as string
-            }
+              if (ch) resolved = ch.outreach_log_id as string
 
-            if (!resolved) {
-              const { data: ol } = await supabase
-                .from('outreach_logs')
-                .select('id')
-                .in('phone', variants)
-                .limit(1)
-                .maybeSingle()
-              if (ol) resolved = ol.id as string
-            }
+              if (!resolved) {
+                const { data: mp } = await supabase
+                  .from('contact_phone_mappings')
+                  .select('contact_id')
+                  .in('phone_number', variants)
+                  .limit(1)
+                  .maybeSingle()
+                if (mp) resolved = mp.contact_id as string
+              }
 
-            phoneContactIdCache.set(payload.chat_phone, resolved)
-            contactId = resolved
-            console.log(
-              '[main] resolved contactId for %s → %s',
-              payload.chat_phone,
-              contactId ?? 'null (unmapped)',
-            )
+              if (!resolved) {
+                const { data: ol } = await supabase
+                  .from('outreach_logs')
+                  .select('id')
+                  .in('phone', variants)
+                  .limit(1)
+                  .maybeSingle()
+                if (ol) resolved = ol.id as string
+              }
+
+              phoneContactIdCache.set(payload.chat_phone, resolved)
+              contactId = resolved
+              console.log(
+                '[main] resolved contactId for %s → %s',
+                payload.chat_phone,
+                contactId ?? 'null (unmapped)',
+              )
+            }
           } catch (err) {
             console.error('[main] contactId resolution failed:', err)
             phoneContactIdCache.set(payload.chat_phone, null)
@@ -2191,6 +2395,48 @@ function registerIpc(): void {
     if (activeTab === 'li') {
       sidebarView?.webContents.send('sidebar:context', { tab: 'li', state: payload })
     }
+  })
+
+  ipcMain.handle('linkedin:sync-inbox', async () => {
+    const result = await syncLinkedinInbox(1)
+    linkedinMessagesView?.webContents.send('linkedin:updated')
+    publishSyncStatus()
+    return result
+  })
+  ipcMain.handle('linkedin:get-inbox', () => linkedinInbox())
+  ipcMain.handle('linkedin:get-thread', async (_event, conversationId: string) => {
+    await syncLinkedinConversation(conversationId, 3).catch((err) => {
+      console.warn('[linkedin] thread sync failed:', err instanceof Error ? err.message : err)
+    })
+    return linkedinThread(conversationId)
+  })
+  ipcMain.handle('linkedin:select-conversation', async (_event, conversationId: string) => {
+    const thread = linkedinThread(conversationId)
+    const urns = parseJsonArray(thread.conversation?.participant_urns)
+    const profile = urns[0] ? linkedinProfileByUrn(urns[0]) : null
+    if (!profile) {
+      liContext = { kind: 'none' }
+    } else {
+      const url = profile.linkedin_url || (profile.public_id ? `https://www.linkedin.com/in/${profile.public_id}` : '')
+      liContext = {
+        kind: 'profile',
+        url,
+        slug: profile.public_id || profile.urn,
+        name: profile.full_name,
+        jobTitle: profile.occupation,
+        company: null,
+        companyLinkedinUrl: null,
+        companyLogoUrl: null,
+        location: profile.location,
+        about: null,
+        photoUrl: profile.picture_url,
+        avatarDataUrl: null,
+      }
+    }
+    if (activeTab === 'li') {
+      sidebarView?.webContents.send('sidebar:context', { tab: 'li', state: liContext })
+    }
+    return { ok: true }
   })
 
   // Navigate the WhatsApp view to a private DM with a phone number.

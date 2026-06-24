@@ -392,7 +392,9 @@ function buildCapturedMessage(msg: Element): CapturedMessage | null {
   // Chat identifier in our own normalized form.
   const chatPhone =
     identity.kind === 'person'
-      ? '+' + identity.phone
+      ? identity.phone
+        ? (identity.phone.startsWith('+') ? identity.phone : '+' + identity.phone.replace(/\D/g, ''))
+        : `name:${identity.name ?? 'unknown'}`
       : identity.groupId // groups use the raw groupid@g.us
   const chatKind: 'person' | 'group' = identity.kind
 
