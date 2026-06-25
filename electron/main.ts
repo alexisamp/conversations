@@ -2495,7 +2495,7 @@ function registerIpc(): void {
   })
   ipcMain.handle('linkedin:get-inbox', () => linkedinInbox())
   ipcMain.handle('linkedin:get-thread', async (_event, conversationId: string) => {
-    await syncLinkedinConversation(conversationId, 3).catch((err) => {
+    await syncLinkedinConversation(conversationId, 25).catch((err) => {
       console.warn('[linkedin] thread sync failed:', err instanceof Error ? err.message : err)
     })
     return linkedinThread(conversationId)

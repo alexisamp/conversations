@@ -10,7 +10,7 @@ import {
   type LinkedinMessageRow,
 } from '../db/local'
 import { getLinkedinMemberUrn, getLinkedinSession } from './client'
-import { fetchConversationsPage, fetchMessages, type InboxCategory } from './api'
+import { fetchAllMessages, fetchConversationsPage, type InboxCategory } from './api'
 import { normalizeConversations, normalizeMessages } from './normalizer'
 
 const CATEGORIES: InboxCategory[] = ['PRIMARY_INBOX', 'SECONDARY_INBOX', 'ARCHIVE', 'SPAM']
@@ -46,11 +46,10 @@ export async function syncLinkedinInbox(maxPagesPerCategory = 1): Promise<{ conv
 export async function syncLinkedinConversation(conversationId: string, maxPages = 3): Promise<number> {
   const memberUrn = await getLinkedinMemberUrn()
   let changed = 0
-  for (let page = 0; page < maxPages; page++) {
-    const raw = await fetchMessages(conversationId, 50, page * 50)
+  const pages = await fetchAllMessages(conversationId, maxPages)
+  for (const raw of pages) {
     const messages = normalizeMessages(raw, conversationId, memberUrn)
     changed += upsertLinkedinMessages(messages)
-    if (messages.length === 0) break
   }
   return changed
 }
@@ -72,4 +71,3 @@ export function linkedinThread(conversationId: string): {
     messages: linkedinMessagesForConversation(conversationId, 300),
   }
 }
-
