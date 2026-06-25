@@ -166,17 +166,28 @@ function ThreadView({
 }) {
   const names = parseList(conversation.participant_names)
   const title = names.join(', ') || 'LinkedIn conversation'
+  const fallbackPreview = conversation.last_message?.trim() || null
   return (
     <>
       <header className="li-thread-header">
         <div>
           <strong>{title}</strong>
-          <span>{messages.length} messages</span>
+          <span>{messages.length > 0 ? `${messages.length} messages` : 'Cached preview'}</span>
         </div>
       </header>
       <div className="li-message-list">
         {messages.length === 0 ? (
-          <div className="li-thread-empty">No messages cached for this thread yet.</div>
+          fallbackPreview ? (
+            <div className="li-message theirs">
+              <div className="li-message-meta">
+                <span>{title}</span>
+                <time>{formatMessageTime(conversation.last_activity_at)}</time>
+              </div>
+              <div className="li-message-bubble">{fallbackPreview}</div>
+            </div>
+          ) : (
+            <div className="li-thread-empty">No messages cached for this thread yet.</div>
+          )
         ) : (
           messages.map((message) => (
             <div key={message.id} className={`li-message ${message.is_from_me ? 'mine' : 'theirs'}`}>

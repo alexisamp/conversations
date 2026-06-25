@@ -846,7 +846,8 @@ body {
 
 /* ────────── LinkedIn messages inbox ────────── */
 .li-messages-shell {
-  height: 100vh;
+  height: 100%;
+  min-height: 0;
   display: grid;
   grid-template-columns: minmax(280px, 36%) minmax(0, 1fr);
   background: #f5f7f8;
@@ -856,10 +857,12 @@ body {
 
 .li-inbox {
   min-width: 0;
+  min-height: 0;
   border-right: 1px solid #d9e0e5;
   background: #ffffff;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
 }
 
 .li-inbox-header,
@@ -948,8 +951,10 @@ body {
 }
 
 .li-conversation-list {
+  flex: 1 1 auto;
   overflow: auto;
   min-height: 0;
+  overscroll-behavior: contain;
 }
 
 .li-conversation-row {
@@ -1038,9 +1043,11 @@ body {
 
 .li-thread {
   min-width: 0;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   background: #f7f9fb;
+  overflow: hidden;
 }
 
 .li-thread-empty {
@@ -1050,12 +1057,14 @@ body {
 }
 
 .li-message-list {
+  flex: 1 1 auto;
   min-height: 0;
   overflow: auto;
   padding: 18px;
   display: flex;
   flex-direction: column;
   gap: 10px;
+  overscroll-behavior: contain;
 }
 
 .li-message {
