@@ -9,7 +9,7 @@ import {
   type LinkedinConversationRow,
   type LinkedinMessageRow,
 } from '../db/local'
-import { getLinkedinMemberUrn, getLinkedinSession } from './client'
+import { getLinkedinMemberUrn } from './client'
 import { fetchAllMessages, fetchConversationsPage, type InboxCategory } from './api'
 import { normalizeConversations, normalizeMessages } from './normalizer'
 
@@ -55,9 +55,8 @@ export async function syncLinkedinConversation(conversationId: string, maxPages 
 }
 
 export async function linkedinInbox(): Promise<LinkedinInboxSummary> {
-  const session = await getLinkedinSession()
   return {
-    authenticated: session.authenticated,
+    authenticated: true,
     conversations: listLinkedinConversations(120),
   }
 }

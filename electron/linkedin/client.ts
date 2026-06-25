@@ -1,4 +1,5 @@
 import { session } from 'electron'
+import { linkedinSyncState, setLinkedinSyncState } from '../db/local'
 import type { LinkedinSession } from './types'
 
 const BASE_URL = 'https://www.linkedin.com/voyager/api'
@@ -45,6 +46,28 @@ async function cookieHeader(): Promise<{ header: string; jsessionId: string } | 
   }
 }
 
+async function hasLinkedinAuthCookies(): Promise<boolean> {
+  return (await cookieHeader()) !== null
+}
+
+function cachedLinkedinSessionFromDb(): LinkedinSession | null {
+  const memberUrn = linkedinSyncState('session_member_urn')
+  if (!memberUrn) return null
+  return {
+    authenticated: true,
+    memberUrn,
+    displayName: linkedinSyncState('session_display_name') ?? undefined,
+    publicId: linkedinSyncState('session_public_id') ?? undefined,
+  }
+}
+
+function rememberLinkedinSession(state: LinkedinSession): void {
+  if (!state.memberUrn) return
+  setLinkedinSyncState('session_member_urn', state.memberUrn)
+  if (state.displayName) setLinkedinSyncState('session_display_name', state.displayName)
+  if (state.publicId) setLinkedinSyncState('session_public_id', state.publicId)
+}
+
 export async function linkedinVoyagerFetch(path: string, options: RequestInit = {}): Promise<Response> {
   const cookies = await cookieHeader()
   if (!cookies) throw new Error('LinkedIn session cookies not found. Sign in to LinkedIn first.')
@@ -72,30 +95,50 @@ export async function getLinkedinSession(): Promise<LinkedinSession> {
   if (cachedSession && Date.now() - cachedSessionAt < SESSION_TTL_MS) return cachedSession
   try {
     const res = await linkedinVoyagerFetch('/me')
-    if (!res.ok) return { authenticated: false }
+    if (!res.ok) {
+      if (await hasLinkedinAuthCookies()) return cachedLinkedinSessionFromDb() ?? { authenticated: false }
+      return { authenticated: false }
+    }
     const data = await res.json()
     const miniProfile = data.included?.find(
       (item: any) => item.$type === 'com.linkedin.voyager.identity.shared.MiniProfile',
     )
     const memberId = miniProfile?.entityUrn?.split(':').pop() || ''
     const memberUrn = memberId ? `urn:li:fsd_profile:${memberId}` : ''
-    if (!memberUrn) return { authenticated: false }
+    if (!memberUrn) {
+      if (await hasLinkedinAuthCookies()) return cachedLinkedinSessionFromDb() ?? { authenticated: false }
+      return { authenticated: false }
+    }
     cachedSession = {
       authenticated: true,
       memberUrn,
       displayName: `${miniProfile?.firstName || ''} ${miniProfile?.lastName || ''}`.trim() || undefined,
       publicId: miniProfile?.publicIdentifier,
     }
+    rememberLinkedinSession(cachedSession)
     cachedSessionAt = Date.now()
     return cachedSession
   } catch {
+    if (await hasLinkedinAuthCookies()) {
+      const cached = cachedLinkedinSessionFromDb()
+      if (cached) {
+        cachedSession = cached
+        cachedSessionAt = Date.now()
+        return cached
+      }
+    }
     return { authenticated: false }
   }
 }
 
 export async function getLinkedinMemberUrn(): Promise<string> {
   const state = await getLinkedinSession()
-  if (!state.memberUrn) throw new Error('LinkedIn is not authenticated')
+  if (!state.memberUrn) {
+    if (await hasLinkedinAuthCookies()) {
+      const cached = cachedLinkedinSessionFromDb()
+      if (cached?.memberUrn) return cached.memberUrn
+    }
+    throw new Error('LinkedIn is not authenticated')
+  }
   return state.memberUrn
 }
-
