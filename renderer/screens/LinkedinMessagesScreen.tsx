@@ -14,6 +14,7 @@ export function LinkedinMessagesScreen() {
   const [thread, setThread] = useState<ThreadState>({ kind: 'idle' })
   const [syncing, setSyncing] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [syncNeedsSignin, setSyncNeedsSignin] = useState(false)
 
   async function loadInbox() {
     const inbox = await window.conv.linkedin.getInbox()
@@ -24,6 +25,7 @@ export function LinkedinMessagesScreen() {
   async function syncInbox() {
     setSyncing(true)
     setError(null)
+    setSyncNeedsSignin(false)
     try {
       await window.conv.linkedin.syncInbox()
       await loadInbox()
@@ -31,6 +33,7 @@ export function LinkedinMessagesScreen() {
       const message = err instanceof Error ? err.message : 'LinkedIn sync failed'
       if (/not authenticated|session|sign in/i.test(message)) {
         setError('LinkedIn sync needs a fresh session. Cached chats are still available.')
+        setSyncNeedsSignin(true)
       } else {
         setError(message)
       }
@@ -87,7 +90,15 @@ export function LinkedinMessagesScreen() {
             {syncing ? 'Syncing' : 'Sync'}
           </button>
         </div>
-        {error && <div className="li-inbox-error">{error}</div>}
+        {syncNeedsSignin && (
+          <div className="li-inbox-warning">
+            <span>{error}</span>
+            <button onClick={() => window.conv.linkedin.showSignin()}>
+              Sign in
+            </button>
+          </div>
+        )}
+        {error && !syncNeedsSignin && <div className="li-inbox-error">{error}</div>}
         <div className="li-conversation-list">
           {conversations.length === 0 && !syncing ? (
             <div className="li-empty-list">No LinkedIn messages cached yet.</div>

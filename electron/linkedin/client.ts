@@ -1,4 +1,4 @@
-import { session } from 'electron'
+import { session, type WebContents } from 'electron'
 import { linkedinSyncState, setLinkedinSyncState } from '../db/local'
 import type { LinkedinSession } from './types'
 
@@ -33,7 +33,12 @@ const LI_TRACK = JSON.stringify({
 
 let cachedSession: LinkedinSession | null = null
 let cachedSessionAt = 0
+let linkedinWebContents: WebContents | null = null
 const SESSION_TTL_MS = 30_000
+
+export function setLinkedinWebContentsForVoyager(webContents: WebContents | null): void {
+  linkedinWebContents = webContents
+}
 
 async function cookieHeader(): Promise<{ header: string; jsessionId: string } | null> {
   const cookies = await session.fromPartition('persist:linkedin').cookies.get({ url: COOKIE_URL })
@@ -70,25 +75,90 @@ function rememberLinkedinSession(state: LinkedinSession): void {
 
 export async function linkedinVoyagerFetch(path: string, options: RequestInit = {}): Promise<Response> {
   const cookies = await cookieHeader()
-  if (!cookies) throw new Error('LinkedIn session cookies not found. Sign in to LinkedIn first.')
   const url = `${BASE_URL}${path.startsWith('/') ? path : `/${path}`}`
-  return fetch(url, {
-    ...options,
-    signal: options.signal ?? AbortSignal.timeout(VOYAGER_TIMEOUT_MS),
-    headers: {
-      Cookie: cookies.header,
-      'csrf-token': cookies.jsessionId.replace(/"/g, ''),
-      'x-restli-protocol-version': '2.0.0',
-      'x-li-lang': 'en_US',
-      'x-li-track': LI_TRACK,
-      'x-li-page-instance': PAGE_INSTANCE,
-      'x-li-deco-include-micro-schema': 'true',
-      Origin: 'https://www.linkedin.com',
-      Referer: 'https://www.linkedin.com/messaging/',
-      accept: 'application/vnd.linkedin.normalized+json+2.1',
-      ...(options.headers ?? {}),
-    },
+  if (cookies) {
+    const direct = await fetch(url, {
+      ...options,
+      signal: options.signal ?? AbortSignal.timeout(VOYAGER_TIMEOUT_MS),
+      headers: {
+        Cookie: cookies.header,
+        'csrf-token': cookies.jsessionId.replace(/"/g, ''),
+        'x-restli-protocol-version': '2.0.0',
+        'x-li-lang': 'en_US',
+        'x-li-track': LI_TRACK,
+        'x-li-page-instance': PAGE_INSTANCE,
+        'x-li-deco-include-micro-schema': 'true',
+        Origin: 'https://www.linkedin.com',
+        Referer: 'https://www.linkedin.com/messaging/',
+        accept: 'application/vnd.linkedin.normalized+json+2.1',
+        ...(options.headers ?? {}),
+      },
+    })
+    if (direct.status !== 401 && direct.status !== 403) return direct
+  }
+  return linkedinVoyagerFetchInWebContents(url, options)
+}
+
+async function linkedinVoyagerFetchInWebContents(url: string, options: RequestInit): Promise<Response> {
+  if (!linkedinWebContents || linkedinWebContents.isDestroyed()) {
+    throw new Error('LinkedIn session cookies not found. Sign in to LinkedIn first.')
+  }
+  const method = options.method ?? 'GET'
+  const body = typeof options.body === 'string' ? options.body : undefined
+  const extraHeaders = headersToRecord(options.headers)
+  const result = await linkedinWebContents.executeJavaScript(`
+    (async () => {
+      const cookie = document.cookie || '';
+      const jsession = cookie
+        .split('; ')
+        .find((part) => part.startsWith('JSESSIONID='))
+        ?.split('=')
+        .slice(1)
+        .join('=')
+        .replace(/"/g, '') || '';
+      const headers = {
+        'csrf-token': jsession,
+        'x-restli-protocol-version': '2.0.0',
+        'x-li-lang': 'en_US',
+        'x-li-track': ${JSON.stringify(LI_TRACK)},
+        'x-li-page-instance': ${JSON.stringify(PAGE_INSTANCE)},
+        'x-li-deco-include-micro-schema': 'true',
+        'accept': 'application/vnd.linkedin.normalized+json+2.1',
+        ...${JSON.stringify(extraHeaders)}
+      };
+      const response = await fetch(${JSON.stringify(url)}, {
+        method: ${JSON.stringify(method)},
+        headers,
+        body: ${JSON.stringify(body)},
+        credentials: 'include'
+      });
+      return {
+        ok: response.ok,
+        status: response.status,
+        statusText: response.statusText,
+        headers: Array.from(response.headers.entries()),
+        text: await response.text()
+      };
+    })()
+  `, true) as { ok: boolean; status: number; statusText: string; headers: [string, string][]; text: string }
+  return new Response(result.text, {
+    status: result.status,
+    statusText: result.statusText,
+    headers: result.headers,
   })
+}
+
+function headersToRecord(headers: RequestInit['headers']): Record<string, string> {
+  if (!headers) return {}
+  if (headers instanceof Headers) {
+    const record: Record<string, string> = {}
+    headers.forEach((value, key) => {
+      record[key] = value
+    })
+    return record
+  }
+  if (Array.isArray(headers)) return Object.fromEntries(headers)
+  return headers as Record<string, string>
 }
 
 export async function getLinkedinSession(): Promise<LinkedinSession> {

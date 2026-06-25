@@ -46,7 +46,7 @@ import {
   syncLinkedinConversation,
   syncLinkedinInbox,
 } from './linkedin/sync'
-import { getLinkedinSession } from './linkedin/client'
+import { getLinkedinSession, setLinkedinWebContentsForVoyager } from './linkedin/client'
 
 // Cache phone → contactId so we don't re-resolve on every message.
 // Populated lazily when a message arrives for a new phone.
@@ -518,6 +518,7 @@ async function createMainWindow(): Promise<void> {
   // Register this webContents so scrape-company.ts can navigate it to
   // /company/<slug>/about/ and scrape company fields after a person enrich.
   setLinkedinWebContentsForScrape(linkedinView.webContents)
+  setLinkedinWebContentsForVoyager(linkedinView.webContents)
 
   // Mirror the WhatsApp zoom (0.8) so LinkedIn also renders denser.
   linkedinView.webContents.on('did-finish-load', () => {
