@@ -20,6 +20,7 @@ export function LinkedinMessagesScreen() {
     const inbox = await window.conv.linkedin.getInbox()
     setAuthenticated(inbox.authenticated)
     setConversations(inbox.conversations)
+    return inbox
   }
 
   async function syncInbox() {
@@ -66,7 +67,7 @@ export function LinkedinMessagesScreen() {
   }
 
   useEffect(() => {
-    void loadInbox().then(() => syncInbox())
+    void loadInbox()
     return window.conv.linkedin.onUpdated(() => {
       void loadInbox()
     })
