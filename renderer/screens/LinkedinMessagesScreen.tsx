@@ -31,8 +31,8 @@ export function LinkedinMessagesScreen() {
       await loadInbox()
     } catch (err) {
       const message = err instanceof Error ? err.message : 'LinkedIn sync failed'
-      if (/not authenticated|session|sign in/i.test(message)) {
-        setError('LinkedIn sync needs a fresh session. Cached chats are still available.')
+      if (/401|403|not authenticated|session|sign in|expired/i.test(message)) {
+        setError('LinkedIn session expired. Sign in once in the LinkedIn window, then sync again. Cached chats are still available.')
         setSyncNeedsSignin(true)
       } else {
         setError(message)

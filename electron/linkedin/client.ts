@@ -4,6 +4,7 @@ import type { LinkedinSession } from './types'
 
 const BASE_URL = 'https://www.linkedin.com/voyager/api'
 const COOKIE_URL = 'https://www.linkedin.com'
+const LINKEDIN_HOME_URL = 'https://www.linkedin.com/feed/'
 const VOYAGER_TIMEOUT_MS = 20_000
 
 function randomHex(bytes: number): string {
@@ -35,6 +36,13 @@ let cachedSession: LinkedinSession | null = null
 let cachedSessionAt = 0
 let linkedinWebContents: WebContents | null = null
 const SESSION_TTL_MS = 30_000
+
+export class LinkedinAuthError extends Error {
+  constructor(message = 'LinkedIn session expired. Sign in to LinkedIn again.') {
+    super(message)
+    this.name = 'LinkedinAuthError'
+  }
+}
 
 export function setLinkedinWebContentsForVoyager(webContents: WebContents | null): void {
   linkedinWebContents = webContents
@@ -96,16 +104,29 @@ export async function linkedinVoyagerFetch(path: string, options: RequestInit = 
     })
     if (direct.status !== 401 && direct.status !== 403) return direct
   }
-  return linkedinVoyagerFetchInWebContents(url, options)
+  const webviewResponse = await linkedinVoyagerFetchInWebContents(url, options, cookies?.jsessionId)
+  if (webviewResponse.status === 401 || webviewResponse.status === 403) {
+    throw new LinkedinAuthError(`LinkedIn session expired (${webviewResponse.status}). Sign in to LinkedIn again.`)
+  }
+  return webviewResponse
 }
 
-async function linkedinVoyagerFetchInWebContents(url: string, options: RequestInit): Promise<Response> {
+async function linkedinVoyagerFetchInWebContents(
+  url: string,
+  options: RequestInit,
+  jsessionHint?: string,
+): Promise<Response> {
   if (!linkedinWebContents || linkedinWebContents.isDestroyed()) {
-    throw new Error('LinkedIn session cookies not found. Sign in to LinkedIn first.')
+    throw new LinkedinAuthError('LinkedIn session cookies not found. Sign in to LinkedIn first.')
+  }
+  const currentUrl = linkedinWebContents.getURL()
+  if (!currentUrl.startsWith(COOKIE_URL)) {
+    await linkedinWebContents.loadURL(LINKEDIN_HOME_URL)
   }
   const method = options.method ?? 'GET'
   const body = typeof options.body === 'string' ? options.body : undefined
   const extraHeaders = headersToRecord(options.headers)
+  const csrfToken = jsessionHint?.replace(/"/g, '') ?? ''
   const result = await linkedinWebContents.executeJavaScript(`
     (async () => {
       const cookie = document.cookie || '';
@@ -115,7 +136,7 @@ async function linkedinVoyagerFetchInWebContents(url: string, options: RequestIn
         ?.split('=')
         .slice(1)
         .join('=')
-        .replace(/"/g, '') || '';
+        .replace(/"/g, '') || ${JSON.stringify(csrfToken)};
       const headers = {
         'csrf-token': jsession,
         'x-restli-protocol-version': '2.0.0',
@@ -186,9 +207,11 @@ export async function getLinkedinSession(): Promise<LinkedinSession> {
       publicId: miniProfile?.publicIdentifier,
     }
     rememberLinkedinSession(cachedSession)
+    await session.fromPartition('persist:linkedin').cookies.flushStore().catch(() => {})
     cachedSessionAt = Date.now()
     return cachedSession
-  } catch {
+  } catch (err) {
+    if (err instanceof LinkedinAuthError) return { authenticated: false }
     if (await hasLinkedinAuthCookies()) {
       const cached = cachedLinkedinSessionFromDb()
       if (cached) {
@@ -208,7 +231,7 @@ export async function getLinkedinMemberUrn(): Promise<string> {
       const cached = cachedLinkedinSessionFromDb()
       if (cached?.memberUrn) return cached.memberUrn
     }
-    throw new Error('LinkedIn is not authenticated')
+    throw new LinkedinAuthError('LinkedIn is not authenticated')
   }
   return state.memberUrn
 }

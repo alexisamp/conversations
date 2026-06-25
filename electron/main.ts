@@ -46,7 +46,7 @@ import {
   syncLinkedinConversation,
   syncLinkedinInbox,
 } from './linkedin/sync'
-import { getLinkedinSession, setLinkedinWebContentsForVoyager } from './linkedin/client'
+import { getLinkedinSession, LinkedinAuthError, setLinkedinWebContentsForVoyager } from './linkedin/client'
 
 // Cache phone → contactId so we don't re-resolve on every message.
 // Populated lazily when a message arrives for a new phone.
@@ -721,6 +721,22 @@ function activeContentView(): WebContentsView | null {
   if (activeTab === 'wa') return whatsappView
   if (activeTab === 'li') return linkedinMode === 'web' ? linkedinView : linkedinMessagesView
   return sidebarView
+}
+
+function isLinkedinAuthFailure(err: unknown): boolean {
+  if (err instanceof LinkedinAuthError) return true
+  const message = err instanceof Error ? err.message : String(err)
+  return /401|403|not authenticated|session|sign in|expired/i.test(message)
+}
+
+async function showLinkedinSignin(): Promise<{ ok: boolean; error?: string }> {
+  if (!linkedinView) return { ok: false, error: 'LinkedIn view not ready' }
+  linkedinMode = 'web'
+  linkedinWebPurpose = 'signin'
+  switchTab('li')
+  refreshLayout()
+  await linkedinView.webContents.loadURL(LINKEDIN_URL)
+  return { ok: true }
 }
 
 function cropWhatsAppLeftRail(): void {
@@ -2470,13 +2486,7 @@ function registerIpc(): void {
   })
 
   ipcMain.handle('linkedin:show-signin', async () => {
-    if (!linkedinView) return { ok: false, error: 'LinkedIn view not ready' }
-    linkedinMode = 'web'
-    linkedinWebPurpose = 'signin'
-    switchTab('li')
-    refreshLayout()
-    await linkedinView.webContents.loadURL(LINKEDIN_URL)
-    return { ok: true }
+    return showLinkedinSignin()
   })
   ipcMain.handle('linkedin:show-messages', async () => {
     linkedinMode = 'messages'
@@ -2489,10 +2499,20 @@ function registerIpc(): void {
   })
 
   ipcMain.handle('linkedin:sync-inbox', async () => {
-    const result = await syncLinkedinInbox(1)
-    linkedinMessagesView?.webContents.send('linkedin:updated')
-    publishSyncStatus()
-    return result
+    try {
+      const result = await syncLinkedinInbox(1)
+      linkedinMessagesView?.webContents.send('linkedin:updated')
+      publishSyncStatus()
+      return result
+    } catch (err) {
+      if (isLinkedinAuthFailure(err)) {
+        await showLinkedinSignin().catch((signinErr) => {
+          console.warn('[linkedin] failed to show sign-in:', signinErr instanceof Error ? signinErr.message : signinErr)
+        })
+        throw new LinkedinAuthError('LinkedIn session expired. Sign in once in the LinkedIn window, then sync again.')
+      }
+      throw err
+    }
   })
   ipcMain.handle('linkedin:get-inbox', () => linkedinInbox())
   ipcMain.handle('linkedin:get-thread', async (_event, conversationId: string) => {
