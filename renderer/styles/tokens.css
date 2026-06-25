@@ -891,6 +891,13 @@ body {
   color: #66727d;
 }
 
+.li-inbox-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
 .li-inbox-header button {
   border: 1px solid #c9d3db;
   background: #f8fafb;

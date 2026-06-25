@@ -86,9 +86,14 @@ export function LinkedinMessagesScreen() {
             <strong>LinkedIn</strong>
             <span>{conversations.length} conversations</span>
           </div>
-          <button onClick={syncInbox} disabled={syncing}>
-            {syncing ? 'Syncing' : 'Sync'}
-          </button>
+          <div className="li-inbox-actions">
+            <button type="button" onClick={() => window.conv.linkedin.showSignin()}>
+              Sign in
+            </button>
+            <button type="button" onClick={syncInbox} disabled={syncing}>
+              {syncing ? 'Syncing' : 'Sync'}
+            </button>
+          </div>
         </div>
         {syncNeedsSignin && (
           <div className="li-inbox-warning">
