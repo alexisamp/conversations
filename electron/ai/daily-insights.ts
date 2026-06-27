@@ -1,5 +1,6 @@
 import {
   bridgeMessagesForChat,
+  bridgeMessagesForAllLocal,
   bridgeMessagesForRange,
   bridgeMessagesForStructuredRepair,
   addAiFeedback,
@@ -10,6 +11,7 @@ import {
   latestAiRunOutputs,
   latestAiStagedOutputs,
   linkedinConversation,
+  linkedinMessagesForAllLocal,
   linkedinMessagesForInsightRange,
   linkedinProfileByUrn,
   latestDailyAiRuns,
@@ -31,7 +33,7 @@ import {
   type LinkedinMessageRow,
 } from '../db/local'
 import { getSupabase } from '../supabase/client'
-import { extractWhatsappInsights } from './gemini'
+import { extractWhatsappInsights, type WhatsappInsightExtraction } from './gemini'
 import type { WhatsappBridge } from '../whatsapp/bridge'
 
 const TZ = 'America/New_York'
@@ -385,6 +387,138 @@ function hasIntroductionColumns(payload: Record<string, unknown>): boolean {
   )
 }
 
+function suggestionKeyPart(value: string): string {
+  return normalizeForKey(value).replace(/\s+/g, '-').slice(0, 80) || 'item'
+}
+
+function contactFactTarget(fact: WhatsappInsightExtraction['contact_facts'][number]): 'contact_fact' | 'key_date' {
+  return fact.category === 'key_date' ? 'key_date' : 'contact_fact'
+}
+
+function buildSuggestions(input: {
+  sourceKey: string
+  contactId: string
+  channel: 'whatsapp' | 'linkedin'
+  title: string
+  interactionDate: string
+  direction: 'inbound' | 'outbound'
+  extraction: WhatsappInsightExtraction
+}): Array<{
+  source_external_id: string
+  target: 'todo' | 'contact_fact' | 'key_date' | 'value_log' | 'intro' | 'next_step'
+  title: string
+  body: string
+  payload: Record<string, unknown>
+  confidence: 'low' | 'medium' | 'high'
+}> {
+  const rows: Array<{
+    source_external_id: string
+    target: 'todo' | 'contact_fact' | 'key_date' | 'value_log' | 'intro' | 'next_step'
+    title: string
+    body: string
+    payload: Record<string, unknown>
+    confidence: 'low' | 'medium' | 'high'
+  }> = []
+
+  if (input.extraction.next_step?.trim()) {
+    rows.push({
+      source_external_id: `${input.sourceKey}:next-step:${suggestionKeyPart(input.extraction.next_step)}`,
+      target: 'next_step',
+      title: `Next step for ${input.title}`,
+      body: input.extraction.next_step,
+      confidence: 'medium',
+      payload: {
+        contact_id: input.contactId,
+        channel: input.channel,
+        direction: input.direction,
+        next_step: input.extraction.next_step,
+        next_step_date: input.extraction.next_step_date,
+        next_step_owner: input.extraction.next_step_owner,
+        interaction_date: input.interactionDate,
+      },
+    })
+  }
+
+  input.extraction.contact_facts.slice(0, 8).forEach((fact, index) => {
+    if (!fact.value?.trim()) return
+    const target = contactFactTarget(fact)
+    rows.push({
+      source_external_id: `${input.sourceKey}:${target}:${index}:${suggestionKeyPart(fact.value)}`,
+      target,
+      title: `${target === 'key_date' ? 'Important date' : 'Contact fact'}: ${fact.label ?? fact.category}`,
+      body: fact.value,
+      confidence: fact.needs_review ? 'low' : 'medium',
+      payload: {
+        contact_id: input.contactId,
+        channel: input.channel,
+        category: fact.category,
+        label: fact.label,
+        value: fact.value,
+        importance: fact.importance || 2,
+        source: 'chat_capture',
+        event_type: fact.event_type ?? null,
+        subject: fact.subject ?? null,
+        relation: fact.relation ?? null,
+        date_value: fact.date_value ?? null,
+        date_precision: fact.date_precision ?? null,
+        description: fact.value,
+        interaction_date: input.interactionDate,
+      },
+    })
+  })
+
+  input.extraction.value_logs.slice(0, 8).forEach((value, index) => {
+    if (!value.description?.trim()) return
+    const target = value.type === 'introduction' || value.type === 'referral' ? 'intro' : 'value_log'
+    rows.push({
+      source_external_id: `${input.sourceKey}:${target}:${index}:${suggestionKeyPart(value.description)}`,
+      target,
+      title: `${target === 'intro' ? 'Intro' : 'Value'}: ${input.title}`,
+      body: value.description,
+      confidence: value.confidence ?? 'medium',
+      payload: {
+        contact_id: input.contactId,
+        outreach_log_id: input.contactId,
+        source_contact_id: input.contactId,
+        source_contact_name: input.title,
+        channel: input.channel,
+        type: value.type || 'other',
+        description: value.description,
+        direction: value.direction || 'given',
+        date: input.interactionDate,
+        introduced_person_name: value.introduced_person_name ?? null,
+        introduced_person_company: value.introduced_person_company ?? null,
+        introduced_to_name: value.introduced_to_name ?? null,
+        introduced_to_company: value.introduced_to_company ?? null,
+        connector_name: value.connector_name ?? null,
+        relationship_context: value.relationship_context ?? null,
+        introduction_status: value.introduction_status ?? null,
+        confidence: value.confidence ?? null,
+      },
+    })
+  })
+
+  input.extraction.todos.slice(0, 8).forEach((todo, index) => {
+    if (!todo.text?.trim()) return
+    rows.push({
+      source_external_id: `${input.sourceKey}:todo:${index}:${suggestionKeyPart(todo.text)}`,
+      target: 'todo',
+      title: `Todo: ${input.title}`,
+      body: todo.text,
+      confidence: 'medium',
+      payload: {
+        contact_id: input.contactId,
+        channel: input.channel,
+        text: todo.text,
+        date: todo.date || input.interactionDate,
+        interaction_date: input.interactionDate,
+      },
+    })
+  })
+
+  return rows
+}
+
 export class DailyInsightRunner {
   constructor(private readonly options: DailyInsightRunnerOptions) {}
 
@@ -408,6 +542,33 @@ export class DailyInsightRunner {
     const start = end - STARTUP_LOOKBACK_MS
     const whatsapp = await this.runRange(start, end, reason)
     const linkedin = await this.runLinkedinRange(start, end, reason)
+    return {
+      runId: linkedin.runId || whatsapp.runId,
+      messagesSeen: whatsapp.messagesSeen + linkedin.messagesSeen,
+      conversationsProcessed: whatsapp.conversationsProcessed + linkedin.conversationsProcessed,
+      outputsWritten: whatsapp.outputsWritten + linkedin.outputsWritten,
+      interactionsWritten: (whatsapp.interactionsWritten ?? 0) + (linkedin.interactionsWritten ?? 0),
+      contactFactsWritten: (whatsapp.contactFactsWritten ?? 0) + (linkedin.contactFactsWritten ?? 0),
+      valueLogsWritten: (whatsapp.valueLogsWritten ?? 0) + (linkedin.valueLogsWritten ?? 0),
+      todosWritten: (whatsapp.todosWritten ?? 0) + (linkedin.todosWritten ?? 0),
+      reviewItemsWritten: (whatsapp.reviewItemsWritten ?? 0) + (linkedin.reviewItemsWritten ?? 0),
+    }
+  }
+
+  async runFullLocalBackfill(): Promise<InsightRunResult> {
+    await this.options.bridge.ensureStarted()
+    this.options.bridge.importRecentMessages()
+
+    const whatsapp = await this.runMessages(
+      bridgeMessagesForAllLocal(),
+      'full-local-backfill',
+      { rewriteMissingInteraction: true },
+    )
+    const linkedin = await this.runLinkedinMessages(
+      linkedinMessagesForAllLocal(),
+      'linkedin:full-local-backfill',
+      { rewriteMissingInteraction: true },
+    )
     return {
       runId: linkedin.runId || whatsapp.runId,
       messagesSeen: whatsapp.messagesSeen + linkedin.messagesSeen,
@@ -531,6 +692,113 @@ export class DailyInsightRunner {
     return this.runMessages(messages, reason)
   }
 
+  private async writeInteractionBundle(input: {
+    sourceKey: string
+    contactId: string
+    title: string
+    type: 'whatsapp' | 'linkedin_msg'
+    channel: 'whatsapp' | 'linkedin'
+    direction: 'inbound' | 'outbound'
+    interactionDate: string
+    windowStart: string
+    windowEnd: string
+    messageCount: number
+    summary: string
+    participants: Array<Record<string, unknown>>
+    excerpts: Array<Record<string, unknown>>
+    suggestions: ReturnType<typeof buildSuggestions>
+  }): Promise<{ interactionId: string | null; suggestionsWritten: number }> {
+    const supabase = getSupabase()
+    const {
+      data: { user },
+    } = await supabase.auth.getUser()
+    if (!user) throw new Error('not signed in')
+
+    const interactionPayload = {
+      user_id: user.id,
+      contact_id: input.contactId,
+      type: input.type,
+      direction: input.direction,
+      notes: input.summary,
+      interaction_date: input.interactionDate,
+      channel: input.channel,
+      external_id: input.sourceKey,
+    }
+
+    const { data: existingInteraction, error: lookupError } = await supabase
+      .from('interactions')
+      .select('id')
+      .eq('user_id', user.id)
+      .eq('contact_id', input.contactId)
+      .eq('external_id', input.sourceKey)
+      .maybeSingle()
+    if (lookupError) throw new Error(lookupError.message)
+
+    const interactionWrite = existingInteraction?.id
+      ? await supabase
+        .from('interactions')
+        .update(interactionPayload)
+        .eq('id', existingInteraction.id)
+        .eq('user_id', user.id)
+        .select('id')
+        .single()
+      : await supabase
+        .from('interactions')
+        .insert(interactionPayload)
+        .select('id')
+        .single()
+    const { data: interaction, error: interactionError } = interactionWrite
+    if (interactionError) throw new Error(interactionError.message)
+
+    const interactionId = (interaction?.id as string | undefined) ?? null
+    if (!interactionId) throw new Error('interaction upsert returned no id')
+
+    const { error: detailError } = await supabase
+      .from('interaction_details')
+      .upsert({
+        user_id: user.id,
+        interaction_id: interactionId,
+        channel: input.channel,
+        source_external_id: input.sourceKey,
+        window_start: input.windowStart,
+        window_end: input.windowEnd,
+        message_count: input.messageCount,
+        participants: input.participants,
+        summary: input.summary,
+        excerpts: input.excerpts,
+        updated_at: new Date().toISOString(),
+      }, { onConflict: 'user_id,source_external_id' })
+    if (detailError) throw new Error(detailError.message)
+
+    if (input.suggestions.length > 0) {
+      const rows = input.suggestions.map((suggestion) => ({
+        user_id: user.id,
+        interaction_id: interactionId,
+        contact_id: input.contactId,
+        source_external_id: suggestion.source_external_id,
+        target: suggestion.target,
+        title: suggestion.title,
+        body: suggestion.body,
+        payload: suggestion.payload,
+        confidence: suggestion.confidence,
+      }))
+      const { error: suggestionsError } = await supabase
+        .from('interaction_suggestions')
+        .upsert(rows, { onConflict: 'user_id,source_external_id,target', ignoreDuplicates: true })
+      if (suggestionsError) throw new Error(suggestionsError.message)
+    }
+
+    await supabase.from('outreach_logs')
+      .update({
+        last_interaction_at: input.windowStart,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', input.contactId)
+      .eq('user_id', user.id)
+
+    return { interactionId, suggestionsWritten: input.suggestions.length }
+  }
+
   private async runLinkedinRange(startMs: number, endMs: number, reason: string): Promise<InsightRunResult> {
     const messages = linkedinMessagesForInsightRange(startMs, endMs)
     if (messages.length === 0) {
@@ -552,6 +820,7 @@ export class DailyInsightRunner {
   private async runLinkedinMessages(
     messages: LinkedinMessageRow[],
     reason: string,
+    options: { rewriteMissingInteraction?: boolean } = {},
   ): Promise<InsightRunResult> {
     const dateCovered = messages[0] ? localDate(messages[0].created_at_ms) : localDate(Date.now())
     const runId = createDailyAiRun({
@@ -573,13 +842,14 @@ export class DailyInsightRunner {
           : null
 
         if (!contactId) {
+          await this.createLinkedinIdentityReviewItem(win)
           this.openLinkedinIdentityIssue(win)
           continue
         }
 
         const key = linkedinSourceKey(win)
         const previousOutput = getAiOutput(key)
-        if (previousOutput) {
+        if (previousOutput?.supabase_id || (previousOutput && !options.rewriteMissingInteraction)) {
           markLinkedinMessagesSynced(win.messages.map((message) => message.id), contactId)
           continue
         }
@@ -607,29 +877,50 @@ export class DailyInsightRunner {
           window_end: new Date(last.created_at_ms).toISOString(),
           message_count: win.messages.length,
         }
-        const stagedId = stageAiOutput({
-          run_id: runId,
-          source_key: key,
-          target: 'interaction',
-          contact_id: contactId,
-          interaction_date: interactionDate,
+        const suggestions = buildSuggestions({
+          sourceKey: key,
+          contactId,
+          channel: 'linkedin',
           title: win.title,
-          body: extraction.summary,
-          payload,
+          interactionDate,
+          direction: payload.direction,
+          extraction,
         })
-        if (stagedId) {
-          outputsWritten++
-          counters.interactions_written++
-        }
+        const written = await this.writeInteractionBundle({
+          sourceKey: key,
+          contactId,
+          title: win.title,
+          type: 'linkedin_msg',
+          channel: 'linkedin',
+          direction: payload.direction,
+          interactionDate,
+          windowStart: payload.window_start,
+          windowEnd: payload.window_end,
+          messageCount: win.messages.length,
+          summary: extraction.summary,
+          participants: [{ name: win.title, linkedin_url: win.linkedinUrl }],
+          excerpts: win.messages.slice(-8).map((message) => ({
+            timestamp: new Date(message.created_at_ms).toISOString(),
+            speaker: message.is_from_me ? 'Me' : (message.sender_name || win.title),
+            direction: message.is_from_me ? 'outbound' : 'inbound',
+            text: (message.body || '[media]').replace(/\s+/g, ' ').slice(0, 500),
+          })),
+          suggestions,
+        })
+        outputsWritten += 1 + written.suggestionsWritten
+        counters.interactions_written++
+        counters.contact_facts_written += suggestions.filter((row) => row.target === 'contact_fact' || row.target === 'key_date').length
+        counters.value_logs_written += suggestions.filter((row) => row.target === 'value_log' || row.target === 'intro').length
+        counters.todos_written += suggestions.filter((row) => row.target === 'todo' || row.target === 'next_step').length
         recordAiRunOutput({
           run_id: runId,
           source_key: key,
           target: 'interaction',
           contact_id: contactId,
-          supabase_id: null,
+          supabase_id: written.interactionId,
           label: extraction.summary.slice(0, 160),
         })
-        recordAiOutput(key, 'interaction', null)
+        recordAiOutput(key, 'interaction', written.interactionId)
         markLinkedinMessagesSynced(win.messages.map((message) => message.id), contactId)
         conversationsProcessed++
       }
@@ -671,7 +962,7 @@ export class DailyInsightRunner {
   private async runMessages(
     messages: BridgeMessageRow[],
     reason: string,
-    options: { repairInteractionOnly?: boolean } = {},
+    options: { repairInteractionOnly?: boolean; rewriteMissingInteraction?: boolean } = {},
   ): Promise<InsightRunResult> {
     const dateCovered = messages[0] ? localDate(messages[0].timestamp_ms) : localDate(Date.now())
     const runId = createDailyAiRun({
@@ -723,7 +1014,10 @@ export class DailyInsightRunner {
 
         const key = sourceKey(win)
         const previousOutput = getAiOutput(key)
-        if (previousOutput && (!options.repairInteractionOnly || previousOutput.target !== 'interaction')) {
+        if (
+          previousOutput?.supabase_id ||
+          (previousOutput && !options.rewriteMissingInteraction && (!options.repairInteractionOnly || previousOutput.target !== 'interaction'))
+        ) {
           markBridgeMessagesSynced(win.messages.map((message) => message.id), contactId)
           continue
         }
@@ -738,216 +1032,55 @@ export class DailyInsightRunner {
           contactName: win.chatName,
           feedbackGuidance: aiFeedbackGuidance(),
         })
-        let windowStructuredOutputs = 0
-
-        if (!options.repairInteractionOnly) {
-          const payload = {
-            contact_id: contactId,
-            type: 'whatsapp',
-            direction: dominantDirection(win.messages),
-            notes: extraction.summary,
-            interaction_date: interactionDate,
-            next_step: extraction.next_step,
-            next_step_date: extraction.next_step_date,
-            next_step_owner: extraction.next_step_owner,
-            channel: 'whatsapp',
-            window_start: new Date(first.timestamp_ms).toISOString(),
-            window_end: new Date(last.timestamp_ms).toISOString(),
-            message_count: win.messages.length,
-          }
-          const stagedId = stageAiOutput({
-            run_id: runId,
-            source_key: key,
-            target: 'interaction',
-            contact_id: contactId,
-            interaction_date: interactionDate,
-            title: win.chatName ?? win.phone ?? win.chatId,
-            body: extraction.summary,
-            payload,
-          })
-          if (stagedId) {
-            outputsWritten++
-            counters.interactions_written++
-          }
-          recordAiRunOutput({
-            run_id: runId,
-            source_key: key,
-            target: 'interaction',
-            contact_id: contactId,
-            supabase_id: null,
-            label: extraction.summary.slice(0, 160),
-          })
-        }
-
-        for (const fact of extraction.contact_facts.slice(0, 5)) {
-          if (!fact.value?.trim()) continue
-          const semanticKeyDateKey = keyDateSemanticKey({
-            contactId,
-            title: win.chatName ?? win.phone ?? win.chatId,
-            category: fact.category,
-            eventType: fact.event_type,
-            subject: fact.subject,
-            relation: fact.relation,
-            value: fact.value,
-          })
-          if (semanticKeyDateKey && seenKeyDateKeys.has(semanticKeyDateKey)) continue
-          if (semanticKeyDateKey) seenKeyDateKeys.add(semanticKeyDateKey)
-          const semanticFactKey = factSemanticKey(contactId, fact.category, fact.value)
-          if (semanticFactKey && seenFactKeys.has(semanticFactKey)) continue
-          if (semanticFactKey) seenFactKeys.add(semanticFactKey)
-          if (fact.needs_review) {
-            const payload = {
-              title: `Review WhatsApp fact: ${win.chatName ?? win.phone ?? win.chatId}`,
-              body: fact.value,
-              proposed_target: 'contact_fact',
-              contact_id: contactId,
-              proposed_payload: fact,
-            }
-            const stagedId = stageAiOutput({
-              run_id: runId,
-              source_key: key + ':fact:' + fact.value.slice(0, 40),
-              target: 'review_item',
-              contact_id: contactId,
-              interaction_date: interactionDate,
-              title: win.chatName ?? win.phone ?? win.chatId,
-              body: fact.value,
-              payload,
-            })
-            if (stagedId) {
-              outputsWritten++
-              counters.review_items_written++
-              windowStructuredOutputs++
-            }
-            recordAiRunOutput({
-              run_id: runId,
-              source_key: key,
-              target: 'review_item',
-              contact_id: contactId,
-              supabase_id: null,
-              label: fact.value.slice(0, 160),
-            })
-          } else {
-            const payload = {
-              contact_id: contactId,
-              category: fact.category || 'other',
-              label: fact.label,
-              value: fact.value,
-              importance: fact.importance || 2,
-              source: 'chat_capture',
-              event_type: fact.event_type ?? null,
-              subject: fact.subject ?? null,
-              relation: fact.relation ?? null,
-              date_value: fact.date_value ?? null,
-              date_precision: fact.date_precision ?? null,
-              description: fact.value,
-            }
-            const stagedId = stageAiOutput({
-              run_id: runId,
-              source_key: key,
-              target: 'contact_fact',
-              contact_id: contactId,
-              interaction_date: interactionDate,
-              title: win.chatName ?? win.phone ?? win.chatId,
-              body: fact.value,
-              payload,
-            })
-            if (stagedId) {
-              outputsWritten++
-              counters.contact_facts_written++
-              windowStructuredOutputs++
-            }
-            recordAiRunOutput({
-              run_id: runId,
-              source_key: key,
-              target: 'contact_fact',
-              contact_id: contactId,
-              supabase_id: null,
-              label: `${fact.label ?? fact.category}: ${fact.value}`.slice(0, 160),
-            })
-          }
-        }
-
-        for (const value of extraction.value_logs.slice(0, 5)) {
-          if (!value.description?.trim()) continue
-          const payload = {
-            outreach_log_id: contactId,
-            source_contact_id: contactId,
-            source_contact_name: win.chatName ?? win.phone ?? win.chatId,
-            type: value.type || 'other',
-            description: value.description,
-            direction: value.direction || 'given',
-            date: interactionDate,
-            introduced_person_name: value.introduced_person_name ?? null,
-            introduced_person_company: value.introduced_person_company ?? null,
-            introduced_to_name: value.introduced_to_name ?? null,
-            introduced_to_company: value.introduced_to_company ?? null,
-            connector_name: value.connector_name ?? null,
-            relationship_context: value.relationship_context ?? null,
-            introduction_status: value.introduction_status ?? null,
-            confidence: value.confidence ?? null,
-          }
-          const stagedId = stageAiOutput({
-            run_id: runId,
-            source_key: key,
-            target: 'value_log',
-            contact_id: contactId,
-            interaction_date: interactionDate,
-            title: win.chatName ?? win.phone ?? win.chatId,
-            body: value.description,
-            payload,
-          })
-          if (stagedId) {
-            outputsWritten++
-            counters.value_logs_written++
-            windowStructuredOutputs++
-          }
-          recordAiRunOutput({
-            run_id: runId,
-            source_key: key,
-            target: 'value_log',
-            contact_id: contactId,
-            supabase_id: null,
-            label: value.description.slice(0, 160),
-          })
-        }
-
-        for (const todo of extraction.todos.slice(0, 5)) {
-          if (!todo.text?.trim()) continue
-          const payload = {
-            text: todo.text,
-            date: todo.date || interactionDate,
-            contact_id: contactId,
-          }
-          const stagedId = stageAiOutput({
-            run_id: runId,
-            source_key: key,
-            target: 'todo',
-            contact_id: contactId,
-            interaction_date: interactionDate,
-            title: win.chatName ?? win.phone ?? win.chatId,
-            body: todo.text,
-            payload,
-          })
-          if (stagedId) {
-            outputsWritten++
-            counters.todos_written++
-            windowStructuredOutputs++
-          }
-          recordAiRunOutput({
-            run_id: runId,
-            source_key: key,
-            target: 'todo',
-            contact_id: contactId,
-            supabase_id: null,
-            label: todo.text.slice(0, 160),
-          })
-        }
-
-        recordAiOutput(
-          key,
-          options.repairInteractionOnly || windowStructuredOutputs > 0 ? 'structured' : 'interaction',
-          null,
-        )
+        if (options.repairInteractionOnly) continue
+        const title = win.chatName ?? win.phone ?? win.chatId
+        const direction = dominantDirection(win.messages)
+        const windowStart = new Date(first.timestamp_ms).toISOString()
+        const windowEnd = new Date(last.timestamp_ms).toISOString()
+        const suggestions = buildSuggestions({
+          sourceKey: key,
+          contactId,
+          channel: 'whatsapp',
+          title,
+          interactionDate,
+          direction,
+          extraction,
+        })
+        const written = await this.writeInteractionBundle({
+          sourceKey: key,
+          contactId,
+          title,
+          type: 'whatsapp',
+          channel: 'whatsapp',
+          direction,
+          interactionDate,
+          windowStart,
+          windowEnd,
+          messageCount: win.messages.length,
+          summary: extraction.summary,
+          participants: [{ name: win.chatName, phone: win.phone, chat_id: win.chatId }],
+          excerpts: win.messages.slice(-8).map((message) => ({
+            timestamp: new Date(message.timestamp_ms).toISOString(),
+            speaker: message.direction === 'outbound' ? 'Me' : (message.chat_name || message.sender || title),
+            direction: message.direction,
+            text: (message.text || `[${message.media_type || 'media'}]`).replace(/\s+/g, ' ').slice(0, 500),
+          })),
+          suggestions,
+        })
+        outputsWritten += 1 + written.suggestionsWritten
+        counters.interactions_written++
+        counters.contact_facts_written += suggestions.filter((row) => row.target === 'contact_fact' || row.target === 'key_date').length
+        counters.value_logs_written += suggestions.filter((row) => row.target === 'value_log' || row.target === 'intro').length
+        counters.todos_written += suggestions.filter((row) => row.target === 'todo' || row.target === 'next_step').length
+        recordAiRunOutput({
+          run_id: runId,
+          source_key: key,
+          target: 'interaction',
+          contact_id: contactId,
+          supabase_id: written.interactionId,
+          label: extraction.summary.slice(0, 160),
+        })
+        recordAiOutput(key, 'interaction', written.interactionId)
         markBridgeMessagesSynced(win.messages.map((message) => message.id), contactId)
         conversationsProcessed++
       }
@@ -1186,6 +1319,31 @@ export class DailyInsightRunner {
     })
   }
 
+  private async createLinkedinIdentityReviewItem(win: LinkedinWindow): Promise<void> {
+    const supabase = getSupabase()
+    const {
+      data: { user },
+    } = await supabase.auth.getUser()
+    if (!user) return
+    const first = win.messages[0]
+    await this.createReviewItem(user.id, `linkedin-identity:${win.conversationId}`, {
+      title: `Link LinkedIn chat: ${win.title}`,
+      body: this.linkedinIdentityIssueDetail(win),
+      proposed_target: 'interaction',
+      contact_id: null,
+      proposed_payload: {
+        type: 'linkedin_msg',
+        channel: 'linkedin',
+        source_kind: 'identity_resolution',
+        conversation_id: win.conversationId,
+        linkedin_url: win.linkedinUrl,
+        name: win.title,
+        interaction_date: first ? localDate(first.created_at_ms) : localDate(Date.now()),
+        message_count: win.messages.length,
+      },
+    })
+  }
+
   private isDismissedIdentityIssue(chatId: string): boolean {
     const issueKey = `bridge-identity:${chatId}`
     const row = getDb()
@@ -1295,7 +1453,7 @@ export class DailyInsightRunner {
       const text = (message.body || '[media]').replace(/\s+/g, ' ').trim()
       return `${formatIssueTimestamp(message.created_at_ms)} ${speaker}: ${text.slice(0, 180)}`
     })
-    const detail = `${win.messages.length} LinkedIn message${win.messages.length === 1 ? '' : 's'} captured, ${range}. Link/create the contact once; Conversations will backfill local LinkedIn messages automatically.\nRecent context:\n${samples.join('\n')}`
+    const detail = this.linkedinIdentityIssueDetail(win, range, samples)
     db.prepare(`
       INSERT INTO sync_issues
         (issue_key, kind, severity, title, detail, chat_key, contact_id, status, created_at, updated_at)
@@ -1309,6 +1467,21 @@ export class DailyInsightRunner {
         updated_at = excluded.updated_at,
         resolved_at = NULL
     `).run(issueKey, win.title, detail, `linkedin:${win.conversationId}`, now, now)
+  }
+
+  private linkedinIdentityIssueDetail(win: LinkedinWindow, range?: string, samples?: string[]): string {
+    const first = win.messages[0]
+    const last = win.messages[win.messages.length - 1]
+    const resolvedRange = range ?? (first && last
+      ? `${formatIssueTimestamp(first.created_at_ms)} - ${formatIssueTimestamp(last.created_at_ms)}`
+      : 'No timestamp')
+    const resolvedSamples = samples ?? win.messages.slice(-4).map((message) => {
+      const speaker = message.is_from_me ? 'Me' : (message.sender_name || win.title)
+      const text = (message.body || '[media]').replace(/\s+/g, ' ').trim()
+      return `${formatIssueTimestamp(message.created_at_ms)} ${speaker}: ${text.slice(0, 180)}`
+    })
+    const linkedin = win.linkedinUrl ? `LinkedIn: ${win.linkedinUrl}. ` : ''
+    return `${linkedin}${win.messages.length} LinkedIn message${win.messages.length === 1 ? '' : 's'} captured, ${resolvedRange}. Link/create the contact once; Conversations will backfill local LinkedIn messages automatically.\nRecent context:\n${resolvedSamples.join('\n')}`
   }
 
   private openSyncError(issueKey: string, title: string, detail: string): void {

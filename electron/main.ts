@@ -934,6 +934,23 @@ async function resolveLinkedinContact(input: {
   name: string | null
 }): Promise<string | null> {
   const supabase = getSupabase()
+  const localConversation = linkedinThread(input.conversationId).conversation
+  if (localConversation?.selected_contact_id) return localConversation.selected_contact_id
+  const participantUrn = parseJsonArray(localConversation?.participant_urns)[0] ?? null
+  const stableIdentifiers = [
+    `linkedin_conversation:${input.conversationId}`,
+    participantUrn ? `linkedin_urn:${participantUrn}` : null,
+  ].filter((value): value is string => Boolean(value))
+  if (stableIdentifiers.length > 0) {
+    const { data: stableChannel } = await supabase
+      .from('contact_channels')
+      .select('outreach_log_id')
+      .eq('channel', 'linkedin')
+      .in('channel_identifier', stableIdentifiers)
+      .limit(1)
+      .maybeSingle()
+    if (stableChannel) return stableChannel.outreach_log_id as string
+  }
   if (input.linkedinUrl) {
     const variants = linkedinUrlVariants(input.linkedinUrl)
     const slug = linkedinSlug(input.linkedinUrl)
@@ -1149,31 +1166,41 @@ async function linkLinkedinConversationToContact(input: {
     const urn = parseJsonArray(conversation?.participant_urns)[0] ?? null
     const profile = urn ? linkedinProfileByUrn(urn) : null
     const linkedinUrl = profile?.linkedin_url || (profile?.public_id ? `https://www.linkedin.com/in/${profile.public_id}` : null)
-
+    const identifiers = new Set<string>([
+      `linkedin_conversation:${input.conversation_id}`,
+    ])
+    if (urn) identifiers.add(`linkedin_urn:${urn}`)
     if (linkedinUrl) {
-      const identifiers = linkedinUrlVariants(linkedinUrl)
+      for (const variant of linkedinUrlVariants(linkedinUrl)) identifiers.add(variant)
+    }
+
+    if (identifiers.size > 0) {
       const { data: existingRows, error: lookupError } = await supabase
         .from('contact_channels')
         .select('outreach_log_id, channel_identifier')
         .eq('channel', 'linkedin')
-        .in('channel_identifier', identifiers)
+        .in('channel_identifier', [...identifiers])
       if (lookupError) return { ok: false, error: lookupError.message }
       const existing = (existingRows ?? []) as Array<{ outreach_log_id: string; channel_identifier: string }>
       if (existing.some((row) => row.outreach_log_id !== input.contact_id)) {
         return { ok: false, error: 'This LinkedIn profile is already linked to another contact.' }
       }
       const existingIdentifiers = new Set(existing.map((row) => row.channel_identifier))
-      const missing = identifiers.filter((identifier) => !existingIdentifiers.has(identifier))
+      const missing = [...identifiers].filter((identifier) => !existingIdentifiers.has(identifier))
       if (missing.length > 0) {
-        const { error } = await supabase.from('contact_channels').insert(missing.map((identifier) => ({
-          outreach_log_id: input.contact_id,
-          channel: 'linkedin',
-          channel_identifier: identifier,
-          channel_name: profile?.full_name ?? null,
-          verified: true,
-        })))
+        const { error } = await supabase.from('contact_channels').insert(
+          missing.map((identifier) => ({
+            outreach_log_id: input.contact_id,
+            channel: 'linkedin',
+            channel_identifier: identifier,
+            channel_name: profile?.full_name ?? null,
+            verified: true,
+          })),
+        )
         if (error && error.code !== '23505') return { ok: false, error: error.message }
       }
+    }
+    if (linkedinUrl) {
       await supabase
         .from('outreach_logs')
         .update({ linkedin_url: linkedinUrl, updated_at: new Date().toISOString() })
@@ -2205,6 +2232,12 @@ function registerIpc(): void {
     publishSyncStatus()
     return result
   })
+  ipcMain.handle('insights:run-full-backfill', async () => {
+    if (!insightRunner) throw new Error('Insight runner not ready')
+    const result = await insightRunner.runFullLocalBackfill()
+    publishSyncStatus()
+    return result
+  })
   ipcMain.handle('insights:get-last-runs', () => insightRunner?.getLastRuns(10) ?? [])
   ipcMain.handle('insights:get-staged-outputs', () => insightRunner?.getStagedOutputs(500) ?? [])
   ipcMain.handle('insights:update-staged-output', (_event, id: number, body: string) => {
@@ -2516,7 +2549,7 @@ function registerIpc(): void {
   })
   ipcMain.handle('linkedin:get-inbox', () => linkedinInbox())
   ipcMain.handle('linkedin:get-thread', async (_event, conversationId: string) => {
-    await syncLinkedinConversation(conversationId, 25).catch((err) => {
+    await syncLinkedinConversation(conversationId, 100).catch((err) => {
       console.warn('[linkedin] thread sync failed:', err instanceof Error ? err.message : err)
     })
     return linkedinThread(conversationId)

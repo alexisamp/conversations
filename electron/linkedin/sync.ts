@@ -32,8 +32,8 @@ export async function syncLinkedinInbox(maxPagesPerCategory = 1): Promise<{ conv
       const normalized = normalizeConversations(result.response, memberUrn)
       conversationsChanged += upsertLinkedinConversations(normalized.conversations)
       upsertLinkedinProfiles(normalized.profiles)
-      for (const conv of normalized.conversations.slice(0, 8)) {
-        messagesChanged += await syncLinkedinConversation(conv.id, 1)
+      for (const conv of normalized.conversations.slice(0, 12)) {
+        messagesChanged += await syncLinkedinConversation(conv.id, 5)
       }
       cursor = result.nextCursor
       if (!cursor) break
@@ -43,7 +43,7 @@ export async function syncLinkedinInbox(maxPagesPerCategory = 1): Promise<{ conv
   return { conversations: conversationsChanged, messages: messagesChanged }
 }
 
-export async function syncLinkedinConversation(conversationId: string, maxPages = 3): Promise<number> {
+export async function syncLinkedinConversation(conversationId: string, maxPages = 100): Promise<number> {
   const memberUrn = await getLinkedinMemberUrn()
   let changed = 0
   const pages = await fetchAllMessages(conversationId, maxPages)
@@ -67,6 +67,6 @@ export function linkedinThread(conversationId: string): {
 } {
   return {
     conversation: linkedinConversation(conversationId),
-    messages: linkedinMessagesForConversation(conversationId, 300),
+    messages: linkedinMessagesForConversation(conversationId, 2000),
   }
 }

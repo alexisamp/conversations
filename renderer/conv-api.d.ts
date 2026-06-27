@@ -379,6 +379,12 @@ export type ConvApi = {
       conversationsProcessed: number
       outputsWritten: number
     }>
+    runFullBackfill(): Promise<{
+      runId: number
+      messagesSeen: number
+      conversationsProcessed: number
+      outputsWritten: number
+    }>
     getLastRuns(): Promise<DailyAiRun[]>
     getStagedOutputs(): Promise<AiStagedOutput[]>
     updateStagedOutput(id: number, body: string): Promise<AiStagedOutput | null>

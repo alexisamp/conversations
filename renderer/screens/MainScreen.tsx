@@ -153,6 +153,17 @@ export function MainScreen({ email }: { email: string }) {
     }
   }
 
+  async function runFullHistoryBackfill() {
+    setSyncBusy(true)
+    try {
+      await window.conv.insights.runFullBackfill()
+      await refreshSync()
+      if (lastHitPhoneRef.current) await handleRefresh()
+    } finally {
+      setSyncBusy(false)
+    }
+  }
+
   async function approveAllStagedOutputs() {
     setSyncBusy(true)
     try {
@@ -317,6 +328,7 @@ export function MainScreen({ email }: { email: string }) {
           onRunActive={runActiveSync}
           onRunInsights={runInsights}
           onRepairStructured={repairStructuredInsights}
+          onRunFullBackfill={runFullHistoryBackfill}
           onRetryFailed={retryFailed}
           onOpenBridgePairing={openBridgePairing}
           onResolveIssue={setResolvingIssue}
@@ -390,6 +402,7 @@ function SyncDrawer({
   onRunActive,
   onRunInsights,
   onRepairStructured,
+  onRunFullBackfill,
   onRetryFailed,
   onOpenBridgePairing,
   onResolveIssue,
@@ -405,6 +418,7 @@ function SyncDrawer({
   onRunActive: () => void
   onRunInsights: () => void
   onRepairStructured: () => void
+  onRunFullBackfill: () => void
   onRetryFailed: () => void
   onOpenBridgePairing: () => void
   onResolveIssue: (issue: SyncIssue) => void
@@ -487,6 +501,9 @@ function SyncDrawer({
           </button>
           <button className="ghost" disabled={busy || status.state === 'scanning'} onClick={onRepairStructured}>
             Repair structured
+          </button>
+          <button className="ghost" disabled={busy || status.state === 'scanning'} onClick={onRunFullBackfill}>
+            Backfill all history
           </button>
           <button className="ghost" disabled={busy} onClick={onOpenAiReview}>
             Review AI table

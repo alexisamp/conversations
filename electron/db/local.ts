@@ -395,6 +395,17 @@ export function bridgeMessagesForRange(startMs: number, endMs: number): BridgeMe
     .all(startMs, endMs) as BridgeMessageRow[]
 }
 
+export function bridgeMessagesForAllLocal(): BridgeMessageRow[] {
+  return getDb()
+    .prepare(`
+      SELECT * FROM bridge_messages
+      WHERE chat_kind = 'person'
+        AND chat_id LIKE '%@s.whatsapp.net'
+      ORDER BY chat_id ASC, timestamp_ms ASC
+    `)
+    .all() as BridgeMessageRow[]
+}
+
 export function bridgeMessagesForStructuredRepair(startMs: number, endMs: number): BridgeMessageRow[] {
   return getDb()
     .prepare(`
@@ -558,7 +569,7 @@ export function linkedinConversation(id: string): LinkedinConversationRow | null
   return row ?? null
 }
 
-export function linkedinMessagesForConversation(conversationId: string, limit = 200): LinkedinMessageRow[] {
+export function linkedinMessagesForConversation(conversationId: string, limit = 2000): LinkedinMessageRow[] {
   return getDb()
     .prepare(`
       SELECT * FROM linkedin_messages
@@ -594,6 +605,17 @@ export function linkedinMessagesForInsightRange(startMs: number, endMs: number):
       ORDER BY m.conversation_id ASC, m.created_at_ms ASC
     `)
     .all(startMs, endMs) as LinkedinMessageRow[]
+}
+
+export function linkedinMessagesForAllLocal(): LinkedinMessageRow[] {
+  return getDb()
+    .prepare(`
+      SELECT m.*
+      FROM linkedin_messages m
+      JOIN linkedin_conversations c ON c.id = m.conversation_id
+      ORDER BY m.conversation_id ASC, m.created_at_ms ASC
+    `)
+    .all() as LinkedinMessageRow[]
 }
 
 export function markLinkedinMessagesSynced(messageIds: string[], contactId: string): void {

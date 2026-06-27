@@ -390,6 +390,12 @@ const api = {
       conversationsProcessed: number
       outputsWritten: number
     }> => ipcRenderer.invoke('insights:repair-structured'),
+    runFullBackfill: (): Promise<{
+      runId: number
+      messagesSeen: number
+      conversationsProcessed: number
+      outputsWritten: number
+    }> => ipcRenderer.invoke('insights:run-full-backfill'),
     getLastRuns: (): Promise<DailyAiRun[]> => ipcRenderer.invoke('insights:get-last-runs'),
     getStagedOutputs: (): Promise<AiStagedOutput[]> =>
       ipcRenderer.invoke('insights:get-staged-outputs'),

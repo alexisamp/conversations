@@ -42,7 +42,7 @@ export async function fetchMessages(
 
 export async function fetchAllMessages(
   conversationId: string,
-  maxPages = 10,
+  maxPages = 100,
 ): Promise<VoyagerResponse[]> {
   const existing = inflightMessageBackfills.get(conversationId)
   if (existing) return existing
