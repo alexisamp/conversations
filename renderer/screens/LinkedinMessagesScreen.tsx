@@ -19,6 +19,13 @@ export function LinkedinMessagesScreen() {
   async function loadInbox() {
     const inbox = await window.conv.linkedin.getInbox()
     setConversations(inbox.conversations)
+    if (!inbox.authenticated) {
+      setSyncNeedsSignin(true)
+      setError('LinkedIn needs a valid session to fetch full message history. Sign in once; cached chats stay visible.')
+    } else if (syncNeedsSignin) {
+      setSyncNeedsSignin(false)
+      setError(null)
+    }
     return inbox
   }
 

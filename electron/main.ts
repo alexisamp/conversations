@@ -87,6 +87,8 @@ const whatsappBridge = new WhatsappBridge()
 const WHATSAPP_LEFT_RAIL_CROP = 0
 let insightRunner: DailyInsightRunner | null = null
 let insightTimer: ReturnType<typeof setTimeout> | null = null
+let linkedinSigninWatchTimer: ReturnType<typeof setInterval> | null = null
+let linkedinPostSigninSync: Promise<{ conversations: number; messages: number }> | null = null
 let sidebarVisible = true
 let activeTab: Tab = 'wa'
 let linkedinMode: 'messages' | 'web' = 'messages'
@@ -526,15 +528,8 @@ async function createMainWindow(): Promise<void> {
     if (linkedinWebPurpose === 'signin') {
       void getLinkedinSession().then((state) => {
         if (!state.authenticated || activeTab !== 'li' || linkedinMode !== 'web') return
-        linkedinWebPurpose = null
-        linkedinMode = 'messages'
-        refreshLayout()
-        void syncLinkedinInbox(1)
-          .catch((err) => console.warn('[linkedin] post-signin sync failed:', err instanceof Error ? err.message : err))
-          .finally(() => {
-            linkedinMessagesView?.webContents.send('linkedin:updated')
-            publishSyncStatus()
-          })
+        stopLinkedinSigninWatcher()
+        void runLinkedinPostSigninSync('did-finish-load')
       })
     }
   })
@@ -729,12 +724,74 @@ function isLinkedinAuthFailure(err: unknown): boolean {
   return /401|403|not authenticated|session|sign in|expired/i.test(message)
 }
 
+function stopLinkedinSigninWatcher(): void {
+  if (!linkedinSigninWatchTimer) return
+  clearInterval(linkedinSigninWatchTimer)
+  linkedinSigninWatchTimer = null
+}
+
+async function runLinkedinPostSigninSync(reason: string): Promise<{ conversations: number; messages: number }> {
+  if (linkedinPostSigninSync) return linkedinPostSigninSync
+  linkedinPostSigninSync = (async () => {
+    console.log('[linkedin] authenticated; running deep sync after', reason)
+    const inbox = await syncLinkedinInbox(5)
+    let threadMessages = 0
+    const inboxRows = (await linkedinInbox()).conversations
+    for (const conversation of inboxRows) {
+      try {
+        threadMessages += await syncLinkedinConversation(conversation.id, 100)
+      } catch (err) {
+        console.warn('[linkedin] thread deep sync failed:', conversation.id, err instanceof Error ? err.message : err)
+      }
+    }
+    linkedinMode = 'messages'
+    linkedinWebPurpose = null
+    refreshLayout()
+    linkedinMessagesView?.webContents.send('linkedin:updated')
+    publishSyncStatus()
+    console.log('[linkedin] deep sync complete inbox=%d messages=%d threadMessages=%d', inbox.conversations, inbox.messages, threadMessages)
+    if (insightRunner) {
+      try {
+        const result = await insightRunner.runFullLocalBackfill()
+        console.log('[linkedin] post-signin backfill complete', result)
+      } catch (err) {
+        console.warn('[linkedin] post-signin backfill failed:', err instanceof Error ? err.message : err)
+      } finally {
+        publishSyncStatus()
+      }
+    }
+    return { conversations: inbox.conversations, messages: inbox.messages + threadMessages }
+  })().finally(() => {
+    linkedinPostSigninSync = null
+  })
+  return linkedinPostSigninSync
+}
+
+function startLinkedinSigninWatcher(): void {
+  stopLinkedinSigninWatcher()
+  const startedAt = Date.now()
+  linkedinSigninWatchTimer = setInterval(() => {
+    if (Date.now() - startedAt > 10 * 60_000) {
+      stopLinkedinSigninWatcher()
+      return
+    }
+    void getLinkedinSession()
+      .then((state) => {
+        if (!state.authenticated && !state.memberUrn) return
+        stopLinkedinSigninWatcher()
+        void runLinkedinPostSigninSync('signin watcher')
+      })
+      .catch(() => {})
+  }, 3000)
+}
+
 async function showLinkedinSignin(): Promise<{ ok: boolean; error?: string }> {
   if (!linkedinView) return { ok: false, error: 'LinkedIn view not ready' }
   linkedinMode = 'web'
   linkedinWebPurpose = 'signin'
   switchTab('li')
   refreshLayout()
+  startLinkedinSigninWatcher()
   await linkedinView.webContents.loadURL(LINKEDIN_URL)
   return { ok: true }
 }
@@ -2524,7 +2581,7 @@ function registerIpc(): void {
 
   ipcMain.handle('linkedin:sync-inbox', async () => {
     try {
-      const result = await syncLinkedinInbox(1)
+      const result = await runLinkedinPostSigninSync('manual sync')
       linkedinMessagesView?.webContents.send('linkedin:updated')
       publishSyncStatus()
       return result
