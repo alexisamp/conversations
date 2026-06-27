@@ -86,14 +86,12 @@ export function MainScreen({ email }: { email: string }) {
   }, [runPersonLookup])
 
   const refreshSync = useCallback(async () => {
-    const [status, issues, outputs] = await Promise.all([
+    const [status, issues] = await Promise.all([
       window.conv.sync.getStatus(),
       window.conv.sync.listIssues(),
-      window.conv.insights.getStagedOutputs(),
     ])
     setSyncStatus(status)
     setSyncIssues(issues)
-    setStagedOutputs(outputs)
   }, [])
 
   useEffect(() => {
@@ -101,7 +99,6 @@ export function MainScreen({ email }: { email: string }) {
     const unsubscribe = window.conv.sync.onStatus((status) => {
       setSyncStatus(status)
       void window.conv.sync.listIssues().then(setSyncIssues)
-      void window.conv.insights.getStagedOutputs().then(setStagedOutputs)
     })
     return unsubscribe
   }, [refreshSync])
@@ -303,16 +300,9 @@ export function MainScreen({ email }: { email: string }) {
           context={context}
           personLookup={personLookup}
           onRefreshPerson={handleRefresh}
-          stagedOutputs={stagedOutputs}
           syncIssues={syncIssues}
           syncBusy={syncBusy}
           onRefreshSync={refreshSync}
-          onUpdateStagedOutput={updateStagedOutput}
-          onApproveStagedOutput={approveStagedOutput}
-          onApproveStagedOutputs={approveStagedOutputs}
-          onApproveAllStagedOutputs={approveAllStagedOutputs}
-          onRejectStagedOutputs={rejectStagedOutputs}
-          onFeedbackStagedOutput={addStagedOutputFeedback}
           onResolveIssue={setResolvingIssue}
           onDismissIssue={dismissSyncIssue}
         />
@@ -321,7 +311,6 @@ export function MainScreen({ email }: { email: string }) {
         <SyncDrawer
           status={syncStatus}
           issues={syncIssues}
-          stagedOutputs={stagedOutputs}
           busy={syncBusy}
           onClose={() => setSyncDrawerOpen(false)}
           onRunCatchUp={runCatchUp}
@@ -333,11 +322,6 @@ export function MainScreen({ email }: { email: string }) {
           onOpenBridgePairing={openBridgePairing}
           onResolveIssue={setResolvingIssue}
           onDismissIssue={dismissSyncIssue}
-          onOpenAiReview={async () => {
-            setSyncDrawerOpen(false)
-            await window.conv.sidebar.openAiReview()
-            await refreshSync()
-          }}
         />
       )}
       {resolvingIssue && (
@@ -395,7 +379,6 @@ function SyncStatusBar({
 function SyncDrawer({
   status,
   issues,
-  stagedOutputs,
   busy,
   onClose,
   onRunCatchUp,
@@ -407,11 +390,9 @@ function SyncDrawer({
   onOpenBridgePairing,
   onResolveIssue,
   onDismissIssue,
-  onOpenAiReview,
 }: {
   status: SyncStatus
   issues: SyncIssue[]
-  stagedOutputs: AiStagedOutput[]
   busy: boolean
   onClose: () => void
   onRunCatchUp: () => void
@@ -423,12 +404,10 @@ function SyncDrawer({
   onOpenBridgePairing: () => void
   onResolveIssue: (issue: SyncIssue) => void
   onDismissIssue: (issueKey: string) => void
-  onOpenAiReview: () => void
 }) {
   const identityIssues = issues.filter((issue) => issue.kind === 'identity_resolution')
   const errorIssues = issues.filter((issue) => issue.kind === 'sync_error')
   const historyIssues = issues.filter((issue) => issue.kind === 'history_import')
-  const pendingOutputs = stagedOutputs.filter((output) => output.status === 'pending' || output.status === 'failed')
   const bridge = status.bridgeStatus
 
   return (
@@ -461,10 +440,6 @@ function SyncDrawer({
           <div>
             <strong>{bridge?.importedToday ?? 0}</strong>
             <span>bridge today</span>
-          </div>
-          <div>
-            <strong>{pendingOutputs.length}</strong>
-            <span>AI review</span>
           </div>
           <div>
             <strong>{status.lastInsightRun ? formatAiRunCounts(status.lastInsightRun) : 'never'}</strong>
@@ -504,9 +479,6 @@ function SyncDrawer({
           </button>
           <button className="ghost" disabled={busy || status.state === 'scanning'} onClick={onRunFullBackfill}>
             Backfill all history
-          </button>
-          <button className="ghost" disabled={busy} onClick={onOpenAiReview}>
-            Review AI table
           </button>
           <button className="ghost" disabled={busy || status.state === 'scanning'} onClick={onRetryFailed}>
             Retry failed
@@ -582,6 +554,114 @@ function SyncIssueGroup({
           ))}
         </ul>
       )}
+    </section>
+  )
+}
+
+function ContactLinkingReview({
+  issues,
+  busy,
+  onRefresh,
+  onResolveIssue,
+  onDismissIssue,
+}: {
+  issues: SyncIssue[]
+  busy: boolean
+  onRefresh: () => void
+  onResolveIssue: (issue: SyncIssue) => void
+  onDismissIssue: (issueKey: string) => void
+}) {
+  const identityIssues = issues.filter((issue) =>
+    issue.kind === 'identity_resolution' &&
+    issue.status === 'open',
+  )
+
+  return (
+    <section className="ai-review ai-review-page">
+      <header className="ai-review-header">
+        <div>
+          <h2>Review</h2>
+          <p>
+            Link unmatched WhatsApp and LinkedIn conversations to the right reThink contact. Interaction summaries and suggested actions are written to reThink automatically.
+          </p>
+        </div>
+        <div className="ai-review-progress">
+          <strong>{identityIssues.length}</strong>
+          <span>need linking</span>
+        </div>
+        <div className="ai-review-actions">
+          <button className="ghost" onClick={onRefresh} disabled={busy}>Refresh</button>
+        </div>
+      </header>
+      <div className="ai-review-toolbar">
+        <div className="ai-toolbar-stat ai-toolbar-warning">
+          <strong>{identityIssues.length}</strong>
+          <span>unmatched</span>
+        </div>
+        <div className="ai-toolbar-tabs">
+          <span className="on">Pending <b>{identityIssues.length}</b></span>
+        </div>
+      </div>
+      <div className="ai-review-table-wrap">
+        <table className="ai-review-table ai-review-grouped">
+          <thead>
+            <tr>
+              <th>Conversation</th>
+              <th>Status</th>
+              <th>This review</th>
+              <th>Channel</th>
+              <th>Messages</th>
+              <th>Last seen</th>
+              <th>Context</th>
+              <th>Needs review</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {identityIssues.length === 0 ? (
+              <tr>
+                <td colSpan={9} className="ai-review-empty">No unmatched conversations.</td>
+              </tr>
+            ) : identityIssues.map((issue) => (
+              <tr key={issue.issue_key} className="ai-person-row ai-row-failed">
+                <td className="ai-person-cell">
+                  <div className="ai-avatar">{initials(issueName(issue) ?? issue.title ?? 'Review')}</div>
+                  <div className="ai-person-copy">
+                    <strong>{issueName(issue) ?? issue.title ?? 'Unmatched conversation'}</strong>
+                    <span>{issue.chat_key || issue.issue_key}</span>
+                  </div>
+                </td>
+                <td>
+                  <span className="ai-link-badge ai-unlinked">
+                    <span className="ai-status-dot" />
+                    not linked
+                  </span>
+                </td>
+                <td>
+                  <div className="ai-review-preview">
+                    <span>{issue.detail || 'Link this conversation to a contact once.'}</span>
+                  </div>
+                </td>
+                <td>{issue.issue_key.startsWith('linkedin') ? countBadge(1, 'linkedin') : countBadge(1, 'whatsapp')}</td>
+                <td>{countBadge(1, 'thread')}</td>
+                <td><span className="muted small">{formatSyncAgo(issue.updated_at ?? Date.now())}</span></td>
+                <td><span className="muted small">{issue.severity}</span></td>
+                <td>{countBadge(1, 'link')}</td>
+                <td>
+                  <div className="ai-row-actions">
+                    <button className="ai-primary-action" onClick={() => onResolveIssue(issue)}>
+                      Link
+                    </button>
+                    <button className="ai-secondary-action" onClick={() => onDismissIssue(issue.issue_key)}>
+                      Ignore
+                    </button>
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </section>
   )
 }
@@ -686,7 +766,7 @@ function AiReviewTable({
           <tbody>
             {groups.length === 0 ? (
               <tr>
-                <td colSpan={9} className="ai-review-empty">No AI proposals or identity issues.</td>
+                <td colSpan={9} className="ai-review-empty">No pending reviews.</td>
               </tr>
             ) : (
               groups.map((group) => {
@@ -1207,48 +1287,27 @@ function Body({
   context,
   personLookup,
   onRefreshPerson,
-  stagedOutputs,
   syncIssues,
   syncBusy,
   onRefreshSync,
-  onUpdateStagedOutput,
-  onApproveStagedOutput,
-  onApproveStagedOutputs,
-  onApproveAllStagedOutputs,
-  onRejectStagedOutputs,
-  onFeedbackStagedOutput,
   onResolveIssue,
   onDismissIssue,
 }: {
   context: SidebarContext
   personLookup: PersonLookupState
   onRefreshPerson: () => void
-  stagedOutputs: AiStagedOutput[]
   syncIssues: SyncIssue[]
   syncBusy: boolean
   onRefreshSync: () => void
-  onUpdateStagedOutput: (id: number, body: string) => Promise<void>
-  onApproveStagedOutput: (id: number) => Promise<void>
-  onApproveStagedOutputs: (ids: number[]) => Promise<void>
-  onApproveAllStagedOutputs: () => Promise<void>
-  onRejectStagedOutputs: (ids: number[]) => Promise<void>
-  onFeedbackStagedOutput: (id: number, feedback: string, decision: 'note' | 'reject') => Promise<void>
   onResolveIssue: (issue: SyncIssue) => void
   onDismissIssue: (issueKey: string) => void
 }) {
   if (context.tab === 'ai') {
     return (
-      <AiReviewTable
-        outputs={stagedOutputs}
+      <ContactLinkingReview
         issues={syncIssues}
         busy={syncBusy}
         onRefresh={onRefreshSync}
-        onUpdate={onUpdateStagedOutput}
-        onApprove={onApproveStagedOutput}
-        onApproveMany={onApproveStagedOutputs}
-        onApproveAll={onApproveAllStagedOutputs}
-        onRejectMany={onRejectStagedOutputs}
-        onFeedback={onFeedbackStagedOutput}
         onResolveIssue={onResolveIssue}
         onDismissIssue={onDismissIssue}
       />

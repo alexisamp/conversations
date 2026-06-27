@@ -399,7 +399,7 @@ const TAB_BAR_HTML = `<!doctype html>
     <div class="tabs">
       <button class="tab active" data-tab="wa"><span class="icon">WA</span>WhatsApp<span class="shortcut">⌘1</span></button>
       <button class="tab" data-tab="li"><span class="icon">in</span>LinkedIn<span class="shortcut">⌘2</span></button>
-      <button class="tab" data-tab="ai"><span class="icon">✦</span>AI Review<span class="shortcut">⌘3</span></button>
+      <button class="tab" data-tab="ai"><span class="icon">✦</span>Review<span class="shortcut">⌘3</span></button>
     </div>
     <div class="spacer"></div>
     <button class="search" id="nav-search" title="Search LinkedIn (⌘K)">⌕<span>Search</span><kbd>⌘K</kbd></button>
@@ -826,21 +826,12 @@ async function combinedSyncStatus(base?: SyncStatus): Promise<SyncStatus> {
     issueCount: 0,
   }
   const bridgeStatus = await whatsappBridge.getStatus()
-  const pendingInsightOutputs = countPendingAiStagedOutputs()
-  const visibleStatus = pendingInsightOutputs > 0 && status.state === 'up_to_date'
-    ? {
-        ...status,
-        state: 'insight_pending',
-        label: 'Insight pending',
-        detail: `${pendingInsightOutputs} AI proposals waiting for review`,
-      }
-    : status
   return {
-    ...visibleStatus,
+    ...status,
     bridgeStatus,
     lastInsightRun: insightRunner?.getLastRuns(1)[0] ?? null,
     nextInsightRunAt: insightRunner?.getNextRunAt() ?? nextInsightRunAt(),
-    pendingInsightOutputs,
+    pendingInsightOutputs: countPendingAiStagedOutputs(),
   } as SyncStatus
 }
 
@@ -1420,7 +1411,7 @@ function buildMenu(): void {
           click: () => switchTab('li'),
         },
         {
-          label: 'AI Review',
+          label: 'Review',
           accelerator: 'CmdOrCtrl+3',
           click: () => switchTab('ai'),
         },
