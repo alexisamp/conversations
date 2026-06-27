@@ -6,6 +6,7 @@ const BASE_URL = 'https://www.linkedin.com/voyager/api'
 const COOKIE_URL = 'https://www.linkedin.com'
 const LINKEDIN_HOME_URL = 'https://www.linkedin.com/feed/'
 const VOYAGER_TIMEOUT_MS = 20_000
+const LINKEDIN_COOKIE_PARTITIONS = ['persist:linkedin', 'persist:sidebar'] as const
 
 function randomHex(bytes: number): string {
   return Array.from(crypto.getRandomValues(new Uint8Array(bytes)), (b) =>
@@ -48,8 +49,45 @@ export function setLinkedinWebContentsForVoyager(webContents: WebContents | null
   linkedinWebContents = webContents
 }
 
+async function mirrorLinkedinCookiesToCanonical(cookies: Electron.Cookie[]): Promise<void> {
+  const target = session.fromPartition('persist:linkedin')
+  for (const cookie of cookies) {
+    if (!cookie.value) continue
+    try {
+      await target.cookies.set({
+        url: COOKIE_URL,
+        name: cookie.name,
+        value: cookie.value,
+        domain: cookie.domain,
+        path: cookie.path,
+        secure: cookie.secure,
+        httpOnly: cookie.httpOnly,
+        expirationDate: cookie.expirationDate,
+        sameSite: cookie.sameSite,
+      })
+    } catch (err) {
+      console.warn('[linkedin] failed to mirror cookie:', cookie.name, err instanceof Error ? err.message : err)
+    }
+  }
+  await target.cookies.flushStore().catch(() => {})
+}
+
+async function linkedinCookies(): Promise<Electron.Cookie[]> {
+  for (const partition of LINKEDIN_COOKIE_PARTITIONS) {
+    const cookies = await session.fromPartition(partition).cookies.get({ url: COOKIE_URL })
+    const liAt = cookies.find((cookie) => cookie.name === 'li_at' && cookie.value)
+    const jsession = cookies.find((cookie) => cookie.name === 'JSESSIONID' && cookie.value)
+    if (!liAt || !jsession) continue
+    if (partition !== 'persist:linkedin') {
+      await mirrorLinkedinCookiesToCanonical(cookies)
+    }
+    return cookies
+  }
+  return []
+}
+
 async function cookieHeader(): Promise<{ header: string; jsessionId: string } | null> {
-  const cookies = await session.fromPartition('persist:linkedin').cookies.get({ url: COOKIE_URL })
+  const cookies = await linkedinCookies()
   const liAt = cookies.find((cookie) => cookie.name === 'li_at')
   const jsession = cookies.find((cookie) => cookie.name === 'JSESSIONID')
   if (!liAt || !jsession) return null
@@ -85,24 +123,28 @@ export async function linkedinVoyagerFetch(path: string, options: RequestInit = 
   const cookies = await cookieHeader()
   const url = `${BASE_URL}${path.startsWith('/') ? path : `/${path}`}`
   if (cookies) {
-    const direct = await fetch(url, {
-      ...options,
-      signal: options.signal ?? AbortSignal.timeout(VOYAGER_TIMEOUT_MS),
-      headers: {
-        Cookie: cookies.header,
-        'csrf-token': cookies.jsessionId.replace(/"/g, ''),
-        'x-restli-protocol-version': '2.0.0',
-        'x-li-lang': 'en_US',
-        'x-li-track': LI_TRACK,
-        'x-li-page-instance': PAGE_INSTANCE,
-        'x-li-deco-include-micro-schema': 'true',
-        Origin: 'https://www.linkedin.com',
-        Referer: 'https://www.linkedin.com/messaging/',
-        accept: 'application/vnd.linkedin.normalized+json+2.1',
-        ...(options.headers ?? {}),
-      },
-    })
-    if (direct.status !== 401 && direct.status !== 403) return direct
+    try {
+      const direct = await fetch(url, {
+        ...options,
+        signal: options.signal ?? AbortSignal.timeout(VOYAGER_TIMEOUT_MS),
+        headers: {
+          Cookie: cookies.header,
+          'csrf-token': cookies.jsessionId.replace(/"/g, ''),
+          'x-restli-protocol-version': '2.0.0',
+          'x-li-lang': 'en_US',
+          'x-li-track': LI_TRACK,
+          'x-li-page-instance': PAGE_INSTANCE,
+          'x-li-deco-include-micro-schema': 'true',
+          Origin: 'https://www.linkedin.com',
+          Referer: 'https://www.linkedin.com/messaging/',
+          accept: 'application/vnd.linkedin.normalized+json+2.1',
+          ...(options.headers ?? {}),
+        },
+      })
+      if (direct.status !== 401 && direct.status !== 403) return direct
+    } catch (err) {
+      console.warn('[linkedin] direct Voyager fetch failed; falling back to web contents:', err instanceof Error ? err.message : err)
+    }
   }
   const webviewResponse = await linkedinVoyagerFetchInWebContents(url, options, cookies?.jsessionId)
   if (webviewResponse.status === 401 || webviewResponse.status === 403) {
